@@ -1,3 +1,5 @@
+"""Installing encrypted skill sources always decrypts fresh age data."""
+
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -13,52 +15,58 @@ SPEC.loader.exec_module(manage)
 
 
 class EncryptedInstallTests(unittest.TestCase):
-    def test_matching_installed_plaintext_is_reused_without_decryption(self) -> None:
+    def test_installed_plaintext_is_never_reused(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)
             repo = root / "repo"
-            skills_root = root / ".agents" / "skills"
             staging = root / "staging"
-            skill = repo / "skills" / "access-personal"
+            skill = repo / "skills" / "access-demo"
             skill.mkdir(parents=True)
             (skill / "SKILL.md").write_text("test\n", encoding="utf-8")
             cipher = skill / "access.yml.age"
-            cipher.write_bytes(b"encrypted")
+            cipher.write_bytes(b"age-encryption.org/v1\nsynthetic fixture")
 
-            plaintext = b"access: test\n"
-            installed = skills_root / "access-personal" / "access.yml"
+            installed = root / ".agents" / "skills" / "access-demo" / "access.yml"
             installed.parent.mkdir(parents=True)
-            installed.write_bytes(plaintext)
+            installed.write_bytes(b"previous installed plaintext")
             manifest = {
                 "encrypted_files": {
-                    "access-personal": {
-                        "source": "skills/access-personal/access.yml.age",
+                    "access-demo": {
+                        "source": "skills/access-demo/access.yml.age",
                         "destination": "access.yml",
-                        "plaintext_sha256": manage.hashlib.sha256(plaintext).hexdigest(),
                     }
                 }
             }
 
             session = mock.Mock()
-            session.decrypt.return_value = plaintext
+            session.decrypt.return_value = b"new plaintext from age"
             staged = manage.stage_skill(
-                repo,
-                skills_root,
-                manifest,
-                "access-personal",
-                staging,
-                session,
+                repo, manifest, "access-demo", staging, session
             )
 
-            session.decrypt.assert_not_called()
-            self.assertEqual(plaintext, (staged / "access.yml").read_bytes())
-            self.assertFalse(
-                manage.secret_requires_decryption(
-                    manifest,
-                    skills_root,
-                    "access-personal",
-                )
+            session.decrypt.assert_called_once_with(cipher)
+            self.assertEqual(
+                b"new plaintext from age", (staged / "access.yml").read_bytes()
             )
+            self.assertEqual(b"previous installed plaintext", installed.read_bytes())
+
+    def test_missing_session_does_not_install_previous_plaintext(self):
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            skill = root / "repo" / "skills" / "access-demo"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("test\n", encoding="utf-8")
+            (skill / "access.yml.age").write_bytes(b"age-encryption.org/v1\nfixture")
+            manifest = {"encrypted_files": {
+                "access-demo": {
+                    "source": "skills/access-demo/access.yml.age",
+                    "destination": "access.yml",
+                }
+            }}
+            with self.assertRaisesRegex(manage.ConfigError, "Passphrase session"):
+                manage.stage_skill(
+                    root / "repo", manifest, "access-demo", root / "staging", None
+                )
 
 
 if __name__ == "__main__":
