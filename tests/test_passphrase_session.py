@@ -89,18 +89,17 @@ class PassphraseSessionTests(unittest.TestCase):
             self.assertEqual(b"updated", passphrase.decrypt(ciphertext, "correct phrase"))
 
 
-class InstallSecretReuseTests(unittest.TestCase):
+class InstallDirectDecryptTests(unittest.TestCase):
     @staticmethod
-    def _setup_secret(root: Path, installed: bytes) -> tuple[Path, Path, dict]:
+    def _setup_secret(root: Path, installed: bytes) -> tuple[Path, dict]:
         repo = root / "repo"
-        skills_root = root / ".agents" / "skills"
         source = repo / "skills" / "access"
         source.mkdir(parents=True)
         (source / "SKILL.md").write_text("access skill\n", encoding="utf-8")
         (source / "access.yml.age").write_bytes(
-            passphrase.encrypt(b"expected secret\n", "correct phrase")
+            passphrase.encrypt(b"actual encrypted secret\n", "correct phrase")
         )
-        target = skills_root / "access" / "access.yml"
+        target = root / ".agents" / "skills" / "access" / "access.yml"
         target.parent.mkdir(parents=True)
         target.write_bytes(installed)
         manifest = {
@@ -108,49 +107,34 @@ class InstallSecretReuseTests(unittest.TestCase):
                 "access": {
                     "source": "skills/access/access.yml.age",
                     "destination": "access.yml",
-                    "plaintext_sha256": manage.sha256_bytes(b"expected secret\n"),
                 }
             }
         }
-        return repo, skills_root, manifest
+        return repo, manifest
 
-    def test_matching_installed_secret_is_reused_without_passphrase(self) -> None:
+    def test_existing_installed_value_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)
-            repo, skills_root, manifest = self._setup_secret(
-                root, b"expected secret\n"
-            )
-            staging = root / "staging"
-
-            self.assertFalse(
-                manage.secret_requires_decryption(manifest, skills_root, "access")
-            )
-            staged = manage.stage_skill(
-                repo, skills_root, manifest, "access", staging, None
-            )
-
+            repo, manifest = self._setup_secret(root, b"untrusted old value\n")
+            with mock.patch.object(
+                manage, "read_masked_passphrase", return_value="correct phrase"
+            ) as prompt:
+                staged = manage.stage_skill(
+                    repo, manifest, "access", root / "staging",
+                    manage.PassphraseSession()
+                )
             self.assertEqual(
-                b"expected secret\n",
+                b"actual encrypted secret\n",
                 (staged / "access.yml").read_bytes(),
             )
+            prompt.assert_called_once()
 
-    def test_changed_installed_secret_still_requires_passphrase(self) -> None:
+    def test_secret_requires_passphrase_even_if_old_plaintext_exists(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)
-            repo, skills_root, manifest = self._setup_secret(
-                root, b"locally changed secret\n"
-            )
-            staging = root / "staging"
-
-            self.assertTrue(
-                manage.secret_requires_decryption(manifest, skills_root, "access")
-            )
-            with self.assertRaisesRegex(
-                manage.ConfigError, "Passphrase session is required"
-            ):
-                manage.stage_skill(
-                    repo, skills_root, manifest, "access", staging, None
-                )
+            repo, manifest = self._setup_secret(root, b"actual encrypted secret\n")
+            with self.assertRaisesRegex(manage.ConfigError, "Passphrase session"):
+                manage.stage_skill(repo, manifest, "access", root / "staging", None)
 
 
 class MaskedInputTests(unittest.TestCase):
