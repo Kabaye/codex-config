@@ -1,0 +1,9 @@
+temp/
+.venv/
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+*.tmp
+*.bak
+**/access.yml

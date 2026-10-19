@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "markers": {
+    "global_begin": "<!-- codex-config:begin -->",
+    "global_end": "<!-- codex-config:end -->",
+    "projects_begin": "<!-- codex-config:projects:begin -->",
+    "projects_end": "<!-- codex-config:projects:end -->"
+  },
+  "profiles": {
+    "work": {
+      "global_fragments": [
+        "AGENTS.md",
+        "work/AGENTS.md"
+      ],
+      "projects_fragments": [
+        "bots/AGENTS.md"
+      ],
+      "skills": [
+        "access-work",
+        "access-personal",
+        "issue-delivery",
+        "gitlab-mr-review",
+        "better-codex",
+        "work-overview",
+        "task-capture",
+        "task-discuss",
+        "task-implement",
+        "how",
+        "mr-followup",
+        "is-it-on-env",
+        "approve-for-me"
+      ],
+      "project_skills": [
+        "codex-update",
+        "connect-vpn",
+        "keep-awake"
+      ]
+    },
+    "private": {
+      "global_fragments": [
+        "AGENTS.md",
+        "private/AGENTS.md"
+      ],
+      "projects_fragments": [
+        "bots/AGENTS.md"
+      ],
+      "skills": [
+        "access-personal",
+        "better-codex",
+        "task-capture",
+        "task-discuss",
+        "task-implement",
+        "how",
+        "is-it-on-env",
+        "approve-for-me"
+      ],
+      "project_skills": [
+        "claude-review"
+      ]
+    }
+  },
+  "skill_policy": {},
+  "encrypted_files": {},
+  "private_manifest": "private-config/internal-overrides.json"
+}
