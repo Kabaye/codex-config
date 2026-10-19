@@ -1,7 +1,6 @@
 """Offline tests for public config + private skill source integration."""
 
 import argparse
-import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -70,24 +69,6 @@ class PrivateSkillsRepositoryTests(unittest.TestCase):
                 },
             }),
         )
-        self.private_metadata = self.skills / "private-config" / "internal-overrides.json"
-        self._file(
-            self.private_metadata,
-            json.dumps({
-                "schema_version": 1,
-                "encrypted_files": {
-                    "global-demo": {
-                        "source": "skills/global-demo/access.yml.age",
-                        "destination": "access.yml",
-                        "plaintext_sha256": hashlib.sha256(self.plaintext).hexdigest(),
-                    }
-                },
-                "skill_policy": {
-                    "global-demo": {"usage": "work", "sharing": "private"},
-                    "project-demo": {"usage": "common", "sharing": "private"},
-                },
-            }),
-        )
         self.manifest_path = self.config / "manifest.json"
         self.public_manifest = {
             "schema_version": 1,
@@ -105,7 +86,6 @@ class PrivateSkillsRepositoryTests(unittest.TestCase):
                     "project_skills": ["project-demo"],
                 },
             },
-            "private_manifest": "private-config/internal-overrides.json",
             "encrypted_files": {},
             "skill_policy": {},
         }
@@ -130,24 +110,20 @@ class PrivateSkillsRepositoryTests(unittest.TestCase):
             force=False,
         )
 
-    def test_private_metadata_is_loaded_only_for_full_install(self) -> None:
+    def test_age_cipher_is_discovered_without_hash_manifest(self) -> None:
         result = manager.load_manifest(self.config)
-        self.assertEqual(
-            result["encrypted_files"]["global-demo"]["plaintext_sha256"],
-            hashlib.sha256(self.plaintext).hexdigest(),
-        )
-        self.assertEqual(len(result["skill_policy"]), 2)
+        self.assertEqual(result["encrypted_files"], {
+            "global-demo": {
+                "source": "skills/global-demo/access.yml.age",
+                "destination": "access.yml",
+            }
+        })
+        self.assertNotIn("plaintext_sha256", str(result))
         manager.validate_source(self.config, result)
 
         base = manager.load_manifest(self.config, base_only=True)
         self.assertEqual(base["encrypted_files"], {})
-        self.assertEqual(base["skill_policy"], {})
-        self.private_metadata.unlink()
-        self.assertEqual(
-            {}, manager.load_manifest(self.config, base_only=True)["encrypted_files"]
-        )
-        with self.assertRaisesRegex(manager.ConfigError, "missing"):
-            manager.load_manifest(self.config)
+        self.assertFalse((self.skills / "private-config").exists())
 
     def test_install_keeps_private_material_out_of_public_repo(self) -> None:
         secret_session = mock.Mock()
@@ -210,13 +186,33 @@ class PrivateSkillsRepositoryTests(unittest.TestCase):
         second = manager.source_fingerprint(self.config, manifest, "work")
         self.assertNotEqual(first, second)
 
-    def test_public_manifest_rejects_embedded_secret_metadata(self) -> None:
-        self.public_manifest["encrypted_files"] = {
-            "unexpected": {"plaintext_sha256": "0" * 64}
-        }
-        self._file(self.manifest_path, json.dumps(self.public_manifest))
-        with self.assertRaisesRegex(manager.ConfigError, "must not be duplicated"):
-            manager.load_manifest(self.config)
+    def test_secret_capture_is_opt_in(self) -> None:
+        session = mock.Mock()
+        session.decrypt.return_value = self.plaintext
+        session.encrypt.return_value = b"age-encryption.org/v1\nsynthetic replacement"
+        with mock.patch.object(manager, "PassphraseSession", return_value=session):
+            manager.install_command(self._args())
+            secret_file = self.skills / "skills/global-demo/access.yml.age"
+            original = secret_file.read_bytes()
+            manager.capture_command(self._args())
+            self.assertEqual(original, secret_file.read_bytes())
+
+            args = self._args()
+            args.capture_secrets = True
+            manager.capture_command(args)
+
+        self.assertEqual(session.encrypt.call_count, 1)
+        session.encrypt.assert_called_with(self.plaintext)
+        self.assertEqual(
+            b"age-encryption.org/v1\nsynthetic replacement",
+            (self.skills / "skills/global-demo/access.yml.age").read_bytes(),
+        )
+        self.assertEqual(
+            self.public_manifest,
+            json.loads(self.manifest_path.read_text(encoding="utf-8")),
+        )
+        self.assertNotIn("plaintext_sha256", self.manifest_path.read_text())
+
 
 
 if __name__ == "__main__":
