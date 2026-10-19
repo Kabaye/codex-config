@@ -166,33 +166,6 @@ def load_manifest(
     repo_root: Path, *, base_only: bool = False
 ) -> dict[str, Any]:
     manifest = load_json(repo_root / "manifest.json")
-    private_manifest = manifest.get("private_manifest")
-    if private_manifest is not None:
-        validate_relative_value(private_manifest, "private manifest path")
-        if not base_only:
-            source_repo = skills_repository_root(repo_root)
-            if source_repo == repo_root:
-                raise ConfigError(
-                    "A private manifest requires a separate codex-skills checkout"
-                )
-            secret_manifest = relative_path(source_repo, private_manifest)
-            ensure_no_links(secret_manifest, source_repo)
-            if not secret_manifest.is_file():
-                raise ConfigError(
-                    f"Private credential metadata is missing: {secret_manifest}"
-                )
-            overrides = load_json(secret_manifest)
-            if overrides.get("schema_version") != 1:
-                raise ConfigError("Unsupported private metadata schema")
-            for key in ("encrypted_files", "skill_policy"):
-                value = overrides.get(key, {})
-                if not isinstance(value, dict):
-                    raise ConfigError(f"Invalid private metadata {key}")
-                if manifest.get(key):
-                    raise ConfigError(
-                        f"Private metadata {key} must not be duplicated in public manifest"
-                    )
-                manifest[key] = value
     if manifest.get("schema_version") != 1:
         raise ConfigError("Unsupported manifest schema")
     if not isinstance(manifest.get("profiles"), dict):
@@ -240,24 +213,24 @@ def load_manifest(
             raise ConfigError(
                 f"Profile {name} has skills in both scopes: {', '.join(sorted(overlap))}"
             )
-    encrypted_files = manifest.get("encrypted_files")
-    if not isinstance(encrypted_files, dict):
-        raise ConfigError("Manifest encrypted_files is invalid")
-    for skill, encrypted in encrypted_files.items():
-        validate_safe_name(skill, "encrypted skill name")
-        if not isinstance(encrypted, dict):
-            raise ConfigError(f"Invalid encrypted file entry: {skill}")
-        validate_relative_value(
-            encrypted.get("source"), f"encrypted source for {skill}"
-        )
-        validate_relative_value(
-            encrypted.get("destination"), f"encrypted destination for {skill}"
-        )
-        plaintext_hash = encrypted.get("plaintext_sha256")
-        if not isinstance(plaintext_hash, str) or not SHA256_RE.fullmatch(
-            plaintext_hash
-        ):
-            raise ConfigError(f"Invalid plaintext SHA-256 for {skill}")
+    # Access metadata is discovered from private skill sources at runtime.
+    # No plaintext hashes, private metadata file, or local-secret reuse are used.
+    manifest["encrypted_files"] = {}
+    if not base_only:
+        names = {
+            skill
+            for profile in manifest["profiles"].values()
+            for skill in profile.get("skills", [])
+        }
+        source_repo = skills_repository_root(repo_root) if names else repo_root
+        for skill in sorted(names):
+            source = skill_source_path(repo_root, skill)
+            cipher = source / "access.yml.age"
+            if cipher.is_file() and not is_link_like(cipher):
+                manifest["encrypted_files"][skill] = {
+                    "source": (cipher.relative_to(source_repo)).as_posix(),
+                    "destination": "access.yml",
+                }
     return manifest
 
 
@@ -1185,56 +1158,12 @@ def encrypted_entry(manifest: dict[str, Any], skill: str) -> dict[str, Any] | No
     return value if isinstance(value, dict) else None
 
 
-def reusable_installed_secret(
-    manifest: dict[str, Any],
-    skills_root: Path,
-    skill: str,
-    fallback_skills_root: Path | None = None,
-) -> Path | None:
-    encrypted = encrypted_entry(manifest, skill)
-    if encrypted is None:
-        return None
-    roots = [skills_root]
-    if (
-        fallback_skills_root is not None
-        and fallback_skills_root.resolve() != skills_root.resolve()
-    ):
-        roots.append(fallback_skills_root)
-    for root in roots:
-        installed = relative_path(root / skill, encrypted["destination"])
-        ensure_no_links(installed, root)
-        if not installed.is_file() or is_link_like(installed):
-            continue
-        if sha256_file(installed) == encrypted["plaintext_sha256"].lower():
-            return installed
-    return None
-
-
-
-def secret_requires_decryption(
-    manifest: dict[str, Any],
-    skills_root: Path,
-    skill: str,
-    fallback_skills_root: Path | None = None,
-) -> bool:
-    return (
-        encrypted_entry(manifest, skill) is not None
-        and reusable_installed_secret(
-            manifest, skills_root, skill, fallback_skills_root
-        )
-        is None
-    )
-
-
-
 def stage_skill(
     repo_root: Path,
-    skills_root: Path,
     manifest: dict[str, Any],
     skill: str,
     staging_root: Path,
     session: PassphraseSession | None,
-    fallback_skills_root: Path | None = None,
 ) -> Path:
     source = skill_source_path(repo_root, skill)
     if not source.is_dir() or is_link_like(source):
@@ -1245,28 +1174,12 @@ def stage_skill(
     if encrypted is None:
         return staged
 
+    # Always decrypt the ciphertext; never use an old installed plaintext copy.
     staged_secret = relative_path(staged, encrypted["destination"])
-    expected_hash = encrypted["plaintext_sha256"].lower()
-    reusable = reusable_installed_secret(
-        manifest, skills_root, skill, fallback_skills_root
-    )
-    if reusable is not None:
-        staged_secret.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(reusable, staged_secret)
-        if sha256_file(staged_secret) != expected_hash:
-            staged_secret.unlink(missing_ok=True)
-            raise ConfigError(
-                f"Installed access file changed while staging {skill}; retry install"
-            )
-        return staged
-
     cipher = encrypted_source_path(repo_root, encrypted["source"])
     if session is None:
         raise ConfigError(f"Passphrase session is required for {skill}")
     decrypt_file(session, cipher, staged_secret)
-    if sha256_file(staged_secret) != expected_hash:
-        staged_secret.unlink(missing_ok=True)
-        raise ConfigError(f"Decrypted hash does not match manifest for {skill}")
     return staged
 
 
@@ -1302,9 +1215,6 @@ def source_fingerprint(
         ))
     if source_repo != repo_root:
         paths.add(source_repo / "skills-manifest.json")
-        private_name = manifest.get("private_manifest")
-        if private_name is not None:
-            paths.add(relative_path(source_repo, private_name))
     entries = []
     for path in paths:
         if path.is_relative_to(repo_root):
@@ -1606,16 +1516,8 @@ def install_command(args: argparse.Namespace) -> None:
     )
 
     passphrase_names = [
-        name
-        for name in desired_names
-        if secret_requires_decryption(
-            manifest, skills_root, name, reusable_skills_root
-        )
-    ]
-    reused_secret_names = [
-        name
-        for name in desired_names
-        if encrypted_entry(manifest, name) is not None and name not in passphrase_names
+        name for name in desired_names
+        if encrypted_entry(manifest, name) is not None
     ]
 
     for skill in replacement_names:
@@ -1654,7 +1556,6 @@ def install_command(args: argparse.Namespace) -> None:
                         for name in replacement_project_names
                         if (legacy_project_skills_root / name).exists()
                     ],
-                    "secrets_reused": reused_secret_names,
                     "secrets_require_passphrase": passphrase_names,
                 },
                 indent=2,
@@ -1674,13 +1575,7 @@ def install_command(args: argparse.Namespace) -> None:
         session = PassphraseSession() if passphrase_names else None
         for skill in desired_names:
             desired_staged[skill] = stage_skill(
-                repo_root,
-                skills_root,
-                manifest,
-                skill,
-                staging_root,
-                session,
-                reusable_skills_root,
+                repo_root, manifest, skill, staging_root, session
             )
         for skill in desired_project_names:
             desired_project_staged[skill] = stage_project_skill(
