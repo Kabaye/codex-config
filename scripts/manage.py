@@ -964,22 +964,6 @@ def recover_transactions(
                     backups / "fragments" / f"{index}.bin",
                     True,
                 )
-            private_value = journal.get("private_manifest_path")
-            if private_value is not None:
-                if not isinstance(private_value, str):
-                    raise ConfigError("Interrupted capture has invalid private manifest")
-                private_target = Path(private_value).resolve()
-                require_within(private_target, source_repo)
-                saved_public = load_json(backups / "manifest.json")
-                name = saved_public.get("private_manifest")
-                if (
-                    not isinstance(name, str)
-                    or private_target != relative_path(source_repo, name).resolve()
-                ):
-                    raise ConfigError("Interrupted capture private path mismatch")
-                restore_optional_file(
-                    private_target, backups / "private-manifest.json", True
-                )
             restore_optional_file(
                 repo_root / "manifest.json", backups / "manifest.json", True
             )
@@ -1869,17 +1853,13 @@ def capture_command(args: argparse.Namespace) -> None:
     if set(fragments) | set(project_fragments) != expected_fragments:
         raise ConfigError("Installed source markers do not match the active profile")
 
-    changed_secrets: list[str] = []
-    for skill in config["skills"]:
-        encrypted = encrypted_entry(manifest, skill)
-        if encrypted is None:
-            continue
-        raw = relative_path(installed_skills_root / skill, encrypted["destination"])
-        ensure_no_links(raw, installed_skills_root)
-        if not raw.is_file() or is_link_like(raw):
-            raise ConfigError(f"Installed access file is missing or unsafe: {skill}")
-        if sha256_file(raw) != encrypted["plaintext_sha256"].lower():
-            changed_secrets.append(skill)
+    # Installed plaintext is not compared with the source. Capturing
+    # credentials is an explicit opt-in operation, separate from skill edits.
+    capture_secrets = bool(getattr(args, "capture_secrets", False))
+    encrypted_names = [
+        name for name in config["skills"]
+        if encrypted_entry(manifest, name) is not None
+    ]
 
     if args.dry_run:
         print(
@@ -1890,7 +1870,7 @@ def capture_command(args: argparse.Namespace) -> None:
                     "instruction_fragments": sorted(expected_fragments),
                     "skills": list(config["skills"]),
                     "project_skills": list(config.get("project_skills", [])),
-                    "secrets_to_encrypt": changed_secrets,
+                    "secrets_to_encrypt": encrypted_names if capture_secrets else [],
                 },
                 indent=2,
             )
@@ -1905,12 +1885,6 @@ def capture_command(args: argparse.Namespace) -> None:
     staged_project_skills: dict[str, Path] = {}
     manifest_path = repo_root / "manifest.json"
     public_manifest = load_json(manifest_path)
-    private_name = manifest.get("private_manifest")
-    private_manifest_path = (
-        relative_path(skills_repository_root(repo_root), private_name)
-        if private_name else None
-    )
-
     journal_written = False
     success = False
     try:
@@ -1937,7 +1911,7 @@ def capture_command(args: argparse.Namespace) -> None:
                     ) from exc
                 staged_cipher = staged / cipher_relative
                 staged_cipher.parent.mkdir(parents=True, exist_ok=True)
-                if skill not in changed_secrets:
+                if not capture_secrets:
                     shutil.copy2(cipher, staged_cipher)
 
         for skill in config.get("project_skills", []):
@@ -1955,30 +1929,26 @@ def capture_command(args: argparse.Namespace) -> None:
         raise
 
     try:
-        if changed_secrets:
+        if capture_secrets and encrypted_names:
             session = PassphraseSession()
-            for skill in config["skills"]:
+            # Confirm the same passphrase can decrypt the source age files.
+            # Do not compare plaintext or store hashes.
+            for skill in encrypted_names:
                 encrypted = encrypted_entry(manifest, skill)
-                if encrypted is None:
-                    continue
                 cipher = encrypted_source_path(repo_root, encrypted["source"])
-                plaintext = session.decrypt(cipher)
-                if sha256_bytes(plaintext) != encrypted["plaintext_sha256"].lower():
-                    raise ConfigError(
-                        f"Decrypted hash does not match manifest for {skill}"
-                    )
-            for skill in changed_secrets:
+                session.decrypt(cipher)
+            for skill in encrypted_names:
                 encrypted = encrypted_entry(manifest, skill)
-                if encrypted is None:
-                    raise ConfigError(f"Missing encrypted file metadata: {skill}")
                 raw = relative_path(
                     installed_skills_root / skill, encrypted["destination"]
                 )
-                source_root = skill_source_path(repo_root, skill)
+                ensure_no_links(raw, installed_skills_root)
+                if not raw.is_file() or is_link_like(raw):
+                    raise ConfigError(f"Installed access file is missing: {skill}")
                 cipher = encrypted_source_path(repo_root, encrypted["source"])
+                source_root = skill_source_path(repo_root, skill)
                 staged_cipher = staged_skills[skill] / cipher.relative_to(source_root)
                 encrypt_file(session, raw, staged_cipher)
-                encrypted["plaintext_sha256"] = sha256_file(raw)
 
         backups = staging_root / "backups"
         fragment_names = sorted(expected_fragments)
@@ -1988,12 +1958,6 @@ def capture_command(args: argparse.Namespace) -> None:
                 backups / "fragments" / f"{index}.bin",
             )
         backup_optional_file(manifest_path, backups / "manifest.json")
-        if private_manifest_path is not None:
-            if not private_manifest_path.is_file():
-                raise ConfigError(f"Private metadata is missing: {private_manifest_path}")
-            backup_optional_file(
-                private_manifest_path, backups / "private-manifest.json"
-            )
         state_existed = backup_optional_file(state_path(home), backups / "state.json")
         backup_root = staging_root / "source-backup"
         backup_root.mkdir(parents=True, exist_ok=True)
@@ -2007,10 +1971,6 @@ def capture_command(args: argparse.Namespace) -> None:
                 "operation": "capture",
                 "repo_root": str(repo_root),
                 "skills_source_root": str(skills_repository_root(repo_root)),
-                "private_manifest_path": (
-                    str(private_manifest_path)
-                    if private_manifest_path is not None else None
-                ),
                 "home": str(home),
                 "projects_root": str(projects_root),
                 "project_root": str(project_root),
@@ -2037,15 +1997,9 @@ def capture_command(args: argparse.Namespace) -> None:
             transfer_directory(source_root, backup, staging_root)
             transfer_directory(staged, source_root, staging_root)
 
-        if private_manifest_path is not None:
-            secret_metadata = load_json(private_manifest_path)
-            secret_metadata["encrypted_files"] = manifest["encrypted_files"]
-            secret_metadata["skill_policy"] = manifest.get("skill_policy", {})
-            write_json(private_manifest_path, secret_metadata)
-            # Never write private hashes or policy data into the public manifest.
-            write_json(manifest_path, public_manifest)
-        else:
-            write_json(manifest_path, manifest)
+        # Only instruction fragments and skill ciphertext are captured.
+        # Do not write dynamically discovered access metadata into public Git.
+        write_json(manifest_path, public_manifest)
         validate_source(repo_root, manifest)
         refreshed = load_manifest(repo_root)
         state.update(
@@ -2449,6 +2403,10 @@ def build_parser() -> argparse.ArgumentParser:
     capture = subparsers.add_parser("capture")
     add_location_arguments(capture)
     capture.add_argument("--dry-run", "-DryRun", action="store_true")
+    capture.add_argument(
+        "--capture-secrets", "-CaptureSecrets", action="store_true",
+        help="Explicitly re-encrypt installed access.yml values into private age sources",
+    )
     capture.set_defaults(handler=capture_command)
 
     remove = subparsers.add_parser("remove")
