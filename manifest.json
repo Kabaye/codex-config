@@ -60,6 +60,5 @@
     }
   },
   "skill_policy": {},
-  "encrypted_files": {},
-  "private_manifest": "private-config/internal-overrides.json"
+  "encrypted_files": {}
 }
