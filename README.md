@@ -90,6 +90,9 @@ user files are preserved.
 ./manage.ps1 capture -DryRun
 ./manage.ps1 capture
 
+# Optional: explicitly re-encrypt installed access files
+./manage.ps1 capture -CaptureSecrets
+
 # Uninstall only the files owned by the manager
 ./manage.ps1 remove -DryRun
 ./manage.ps1 remove
@@ -98,21 +101,16 @@ user files are preserved.
 The `update` command fetches both Git remotes and only pulls by fast-forward
 when the checkouts are clean. It refuses to overwrite uncommitted changes.
 
-## Credentials and private metadata
+## Encrypted access
 
-The public `manifest.json` declares a `private_manifest` in the private
-skill checkout. That file supplies the encrypted access metadata and private
-skill policies needed for an authenticated installation.
+Encrypted `access.yml.age` files remain inside private skill directories.
+The installer opens those files directly using an interactive age passphrase
+for each installation or update. No supplementary private configuration
+directory is required.
 
-**No credential hashes, decryption passphrases, tokens, or private policies are
-embedded in this public repository.** Installation fails if the required private
-metadata or skill source is missing. The manager reuses unchanged installed
-credentials only after a matching SHA-256 check against private metadata.
-Otherwise it requests the passphrase interactively.
-
-`capture` writes updated ciphertext to the private skill checkout and saves
-credential metadata there, not in the public manifest. Interrupted operations
-are recovered from protected transaction backups.
+Ordinary `capture` preserves existing encrypted source files. Use
+`capture -CaptureSecrets` when you explicitly intend to re-encrypt installed
+access files. Failed operations are recovered from protected rollback backups.
 
 Never commit `access.yml`, local application configuration, passwords, tokens,
 or machine-specific runtime files.
