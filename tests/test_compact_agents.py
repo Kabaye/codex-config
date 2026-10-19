@@ -13,7 +13,7 @@ class CompactAgentInstructionsTests(unittest.TestCase):
             "AGENTS.md": 3500,
             "work/AGENTS.md": 850,
             "private/AGENTS.md": 750,
-            "bots/AGENTS.md": 3300,
+            "bots/AGENTS.md": 2400,
         }
         for path, max_bytes in budgets.items():
             with self.subTest(path=path):
