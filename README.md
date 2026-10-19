@@ -129,7 +129,7 @@ Codex projects. The `bots/AGENTS.md` file provides general Telegram bot
 release-communication and interaction conventions.
 
 Model routing is intentionally out of scope: use
-[codex-profiles](https://github.com/Kabaye/codex-profiles) for `lite`,
+[codex-profiles](https://github.com/Kabaye/codex-profiles) for
 `work`, `private`, or `strict-common` routing.
 
 ## Development and checks
