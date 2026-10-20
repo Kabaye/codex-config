@@ -151,7 +151,7 @@ runs isolated manager tests. Skill implementation tests run in the private
 ## Safety boundaries
 
 - Never commit secrets, personal access material, or operational identifiers.
-- Keep private skill sources and credential metadata in the private repository.
+- Keep private skill sources and encrypted access files in the private repository.
 - Do not infer publication rights from a skill name or a sharing-policy label.
 - Verify repository visibility and Git history before making a formerly
   private configuration public.

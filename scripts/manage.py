@@ -1440,9 +1440,6 @@ def install_command(args: argparse.Namespace) -> None:
     previous = load_install_state(home)
     previous_profile = previous.get("profile") if previous else None
     previous_skills_root = state_skills_root(previous, home, skills_root)
-    reusable_skills_root = (
-        previous_skills_root if previous and previous.get("skills") else skills_root
-    )
     previous_project_skills_root = state_project_skills_root(
         previous, project_skills_root
     )
