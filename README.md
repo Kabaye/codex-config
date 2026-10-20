@@ -128,7 +128,7 @@ release-communication and interaction conventions.
 
 Model routing is intentionally out of scope: use
 [codex-profiles](https://github.com/Kabaye/codex-profiles) for
-`work`, `private`, or `strict-common` routing.
+`work` and `private` routing.
 
 ## Development and checks
 
