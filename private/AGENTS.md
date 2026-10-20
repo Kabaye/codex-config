@@ -1,5 +1,3 @@
-# Private Profile
-
-- Use personal credentials only when explicitly authorized for the task. An installed skill alone is not permission. Password-manager CLIs or elevated authentication tools require specific authorization; never reveal or commit decrypted access files.
-- Reuse existing checkouts and verify the personal Git identity before committing.
-- Permission to restart an application covers that application only—not background services, scheduled tasks, system settings, or other processes.
+- Use personal accounts and credentials only for explicitly authorized tasks; an installed skill does not grant access.
+- Password-manager CLIs and elevated authentication tools require explicit authorization.
+- Use the personal Git identity in personal repositories.

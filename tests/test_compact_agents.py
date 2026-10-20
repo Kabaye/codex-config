@@ -26,12 +26,13 @@ class CompactAgentInstructionsTests(unittest.TestCase):
         text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         for rule in (
             "git fetch",
-            "git status",
+            "Create worktrees only when the user explicitly requests one.",
             "Conventional Commits",
-            "force-push",
-            "without explicit authorization",
-            "Never print, commit, export, or expose secrets",
+            "Never force-push unless the user explicitly requests it.",
+            "Never commit secrets or private information",
+            "Display secrets or private information only when the user explicitly requests those details.",
             "temp/",
+            ".gitignore",
             "PowerShell 7",
         ):
             with self.subTest(rule=rule):
