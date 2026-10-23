@@ -167,19 +167,26 @@ class InstructionLayoutTests(unittest.TestCase):
 
     def test_sync_write_failure_restores_documents_and_state(self):
         with tempfile.TemporaryDirectory() as raw:
-            args = self._fixture(Path(raw))
+            # Windows temporary paths can have equivalent short/long spellings.
+            # Exercise a noncanonical spelling without depending on 8.3 support.
+            fixture_root = Path(raw)
+            (fixture_root / "path-alias").mkdir()
+            args = self._fixture(fixture_root / "path-alias" / "..")
             manage.install_command(args)
             files = [args.home / n for n in ("AGENTS.md", "WORK.md", "PRIVATE.md")]
             files += [args.projects_root / "AGENTS.md", manage.state_path(args.home)]
             before = {p: p.read_bytes() for p in files}
             (args.repo / "AGENTS.md").write_text("new shared rule\n", encoding="utf-8")
             original_write = manage.atomic_write_text
+            failure_target = (args.home / "PRIVATE.md").resolve()
             def fail_private(path, value):
-                if path == args.home / "PRIVATE.md":
+                if path.resolve() == failure_target:
+                    # The failure must happen after a real partial update.
+                    self.assertIn("new shared rule", (args.home / "AGENTS.md").read_text(encoding="utf-8"))
                     raise OSError("synthetic write failure")
                 return original_write(path, value)
             with mock.patch.object(manage, "atomic_write_text", side_effect=fail_private):
-                with self.assertRaises(OSError):
+                with self.assertRaisesRegex(OSError, "synthetic write failure"):
                     manage.sync_instructions_command(args)
             self.assertEqual(before, {p: p.read_bytes() for p in files})
             self.assertFalse(list((args.home / "codex-config").glob("txn-*")))
