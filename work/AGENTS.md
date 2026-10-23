@@ -1,2 +1,2 @@
-- Use work accounts for work tasks and personal accounts only on explicit request; keep their access separate.
-- Use the corporate Git identity in work repositories and the personal identity in personal repositories.
+- Use work accounts for work tasks and keep their access separate.
+- Use the corporate Git identity in work repositories.

@@ -77,6 +77,19 @@ def require_within(path: Path, root: Path) -> None:
         raise ConfigError(f"Path escapes its allowed root: {path}")
 
 
+def is_path_within(path: Path, root: Path, *, windows: bool | None = None) -> bool:
+    """Return whether path is root or a descendant, using platform path rules."""
+    windows = os.name == "nt" if windows is None else windows
+    candidate = os.path.normpath(str(path.resolve()))
+    boundary = os.path.normpath(str(root.resolve()))
+    if windows:
+        candidate, boundary = candidate.casefold(), boundary.casefold()
+    try:
+        return os.path.commonpath((candidate, boundary)) == boundary
+    except ValueError:
+        return False
+
+
 def validate_safe_name(value: Any, label: str) -> str:
     if (
         not isinstance(value, str)
@@ -173,7 +186,8 @@ def load_manifest(
     if not isinstance(manifest.get("markers"), dict):
         raise ConfigError("Manifest markers are missing")
     required_markers = {"global_begin", "global_end", "projects_begin", "projects_end"}
-    if set(manifest["markers"]) != required_markers:
+    optional_markers = {"work_begin", "work_end", "private_begin", "private_end"}
+    if not required_markers.issubset(manifest["markers"]) or set(manifest["markers"]) - (required_markers | optional_markers):
         raise ConfigError("Manifest marker keys are invalid")
     for key, value in manifest["markers"].items():
         if (
@@ -182,6 +196,24 @@ def load_manifest(
             or not value.startswith("<!-- codex-config:")
         ):
             raise ConfigError(f"Manifest marker {key} is invalid")
+    for begin_key, end_key in (("work_begin", "work_end"), ("private_begin", "private_end")):
+        if begin_key in manifest["markers"] and (
+            manifest["markers"][begin_key] != manifest["markers"]["global_begin"]
+            or manifest["markers"][end_key] != manifest["markers"]["global_end"]
+        ):
+            raise ConfigError(f"{begin_key[:-6]} instructions must reuse global markers")
+    instructions = manifest.get("instructions")
+    if instructions is not None:
+        expected = {"global_fragments", "work_fragments", "private_fragments", "projects_fragments"}
+        if not isinstance(instructions, dict) or set(instructions) != expected:
+            raise ConfigError("Manifest instructions are invalid")
+        for group, values in instructions.items():
+            if not isinstance(values, list) or (
+                group in {"global_fragments", "projects_fragments"} and not values
+            ):
+                raise ConfigError(f"Invalid instruction fragments: {group}")
+            for value in values:
+                validate_relative_value(value, f"instructions.{group} entry")
     for name, config in manifest["profiles"].items():
         validate_safe_name(name, "profile name")
         if not isinstance(config, dict):
@@ -232,6 +264,22 @@ def load_manifest(
                     "destination": "access.yml",
                 }
     return manifest
+
+
+def instruction_layout(manifest: dict[str, Any]) -> dict[str, list[str]]:
+    """Return codex-config-owned instruction sources, independent of profile."""
+    configured = manifest.get("instructions")
+    if isinstance(configured, dict):
+        return configured
+    # Compatibility for v1 manifests used by older installations and callers.
+    profile = next(iter(manifest["profiles"].values()))
+    global_fragments = profile["global_fragments"]
+    return {
+        "global_fragments": global_fragments,
+        "work_fragments": [],
+        "private_fragments": [],
+        "projects_fragments": profile["projects_fragments"],
+    }
 
 
 def ensure_skills_checkout(repo_root: Path) -> None:
@@ -348,6 +396,7 @@ def render_fragment_block(
     fragments: list[str],
     begin: str,
     end: str,
+    replacements: dict[str, str] | None = None,
 ) -> str:
     sections = [begin]
     for fragment in fragments:
@@ -355,7 +404,11 @@ def render_fragment_block(
         if not source.is_file() or is_link_like(source):
             raise ConfigError(f"Missing or unsafe instruction fragment: {fragment}")
         sections.append(f"<!-- codex-config:source {fragment} -->")
-        sections.append(read_text(source).strip("\n"))
+        content = read_text(source).strip("\n")
+        if replacements:
+            for token, value in replacements.items():
+                content = content.replace(token, value)
+        sections.append(content)
     sections.append(end)
     return "\n\n".join(sections)
 
@@ -451,17 +504,23 @@ def build_projects_text(
     end: str,
     force: bool,
 ) -> str:
+    routing = locate_block(current, ROUTING_BEGIN, ROUTING_END)
+    if routing:
+        start, stop, routing_block = routing
+        current = join_sections(current[:start], current[stop:])
+    else:
+        routing_block = ""
     outside, owned_found = strip_owned_regions(current, begin, end)
     outside = outside.strip()
     if owned_found:
-        return join_sections(outside, desired)
+        return join_sections(outside, desired, routing_block)
     if not outside or canonical_text(outside) == canonical_text(legacy):
-        return canonical_text(desired)
+        return join_sections(desired, routing_block)
     if not force:
         raise ConfigError(
             "Unmanaged Projects AGENTS.md content does not match the repository"
         )
-    return join_sections(outside, desired)
+    return join_sections(outside, desired, routing_block)
 
 
 def parse_fragment_block(block: str, begin: str, end: str) -> dict[str, str]:
@@ -833,6 +892,24 @@ def recover_transactions(
                 backups / "state.json",
                 journal.get("state_existed") is True,
             )
+            instruction_files = journal.get("instruction_files", {})
+            if not isinstance(instruction_files, dict):
+                raise ConfigError("Interrupted transaction has invalid instruction_files")
+            for name, entry in instruction_files.items():
+                validate_safe_name(name, "transaction instruction name")
+                if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("existed"), bool):
+                    raise ConfigError("Interrupted transaction has invalid instruction file")
+                target = Path(entry["path"]).resolve()
+                allowed_targets = {
+                    (home / "WORK.md").resolve(),
+                    (home / "PRIVATE.md").resolve(),
+                }
+                if target not in allowed_targets:
+                    raise ConfigError("Interrupted transaction targets an unexpected instruction file")
+                ensure_no_links(target, target.parent)
+                restore_optional_file(
+                    target, backups / f"{name}-agents.bin", entry["existed"]
+                )
 
             journal_skills_root = journal.get("skills_root")
             if journal_skills_root is None:
@@ -985,6 +1062,31 @@ def recover_transactions(
                     project_source_root,
                     project_skills,
                 )
+        elif operation == "sync-instructions":
+            if not isinstance(skills, dict) or skills or not isinstance(project_skills, dict) or project_skills:
+                raise ConfigError("Interrupted instruction sync has invalid skill state")
+            files = journal.get("files")
+            if not isinstance(files, list):
+                raise ConfigError("Interrupted instruction sync has invalid files")
+            for index, entry in enumerate(files):
+                if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("existed"), bool):
+                    raise ConfigError("Interrupted instruction sync has invalid file entry")
+                target = Path(entry["path"]).resolve()
+                allowed_targets = {
+                    (home / "AGENTS.md").resolve(),
+                    (home / "WORK.md").resolve(),
+                    (home / "PRIVATE.md").resolve(),
+                    (projects_root / "AGENTS.md").resolve(),
+                }
+                if target not in allowed_targets:
+                    raise ConfigError("Interrupted instruction sync targets an unexpected path")
+                ensure_no_links(target, target.parent)
+                restore_optional_file(
+                    target, transaction / "backups" / f"instruction-{index}.bin", entry["existed"]
+                )
+            if not isinstance(journal.get("state_existed"), bool):
+                raise ConfigError("Interrupted instruction sync has invalid state_existed")
+            restore_optional_file(state_path(home), backups / "state.json", journal["state_existed"])
         else:
             raise ConfigError(
                 f"Interrupted transaction has invalid operation: {operation!r}"
@@ -1188,8 +1290,12 @@ def source_fingerprint(
     config = profile_config(manifest, profile)
     source_repo = skills_repository_root(repo_root)
     paths: set[Path] = {repo_root / "manifest.json"}
+    instruction_groups = instruction_layout(manifest)
     for group in ("global_fragments", "projects_fragments"):
         for item in config[group]:
+            paths.add(relative_path(repo_root, item))
+    for group in ("global_fragments", "work_fragments", "private_fragments", "projects_fragments"):
+        for item in instruction_groups[group]:
             paths.add(relative_path(repo_root, item))
     for skill in config["skills"]:
         paths.update(iter_tree_files(skill_source_path(repo_root, skill)))
@@ -1287,6 +1393,13 @@ def load_state(home: Path) -> dict[str, Any] | None:
         value = state.get(key)
         if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
             raise ConfigError(f"Installed state {key} is invalid")
+    instruction_hashes = state.get("instruction_block_sha256", {})
+    if not isinstance(instruction_hashes, dict):
+        raise ConfigError("Installed state instruction hashes are invalid")
+    for name, digest in instruction_hashes.items():
+        validate_safe_name(name, "state instruction name")
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            raise ConfigError(f"Installed state instruction hash is invalid: {name}")
     installed_skills_root = state.get("skills_root")
     if installed_skills_root is not None and not isinstance(installed_skills_root, str):
         raise ConfigError("Installed state skills_root is invalid")
@@ -1334,7 +1447,18 @@ def load_install_state(home: Path) -> dict[str, Any] | None:
     profile = value.get("profile")
     installed_skills_root = value.get("skills_root")
     installed_project_skills_root = value.get("project_skills_root")
-    return {
+    preserved = dict(value)
+    hashes = value.get("instruction_block_sha256")
+    safe_hashes = {}
+    if isinstance(hashes, dict):
+        for name, digest in hashes.items():
+            try:
+                validate_safe_name(name, "state instruction name")
+            except ConfigError:
+                continue
+            if isinstance(digest, str) and SHA256_RE.fullmatch(digest):
+                safe_hashes[name] = digest
+    preserved.update({
         "profile": profile if isinstance(profile, str) else None,
         "skills": safe_skills,
         "skills_root": (
@@ -1346,7 +1470,17 @@ def load_install_state(home: Path) -> dict[str, Any] | None:
             if isinstance(installed_project_skills_root, str)
             else None
         ),
-    }
+        "instruction_block_sha256": safe_hashes,
+        "global_block_sha256": value.get("global_block_sha256")
+        if isinstance(value.get("global_block_sha256"), str)
+        and SHA256_RE.fullmatch(value["global_block_sha256"])
+        else None,
+        "projects_block_sha256": value.get("projects_block_sha256")
+        if isinstance(value.get("projects_block_sha256"), str)
+        and SHA256_RE.fullmatch(value["projects_block_sha256"])
+        else None,
+    })
+    return preserved
 
 
 def state_skills_root(
@@ -1401,6 +1535,78 @@ def current_block_hash(path: Path, begin: str, end: str) -> str | None:
     return sha256_text(block[2]) if block else None
 
 
+def managed_instruction_text(
+    current: str,
+    desired: str,
+    legacy: str,
+    begin: str,
+    end: str,
+    force: bool,
+    *,
+    projects: bool = False,
+) -> str:
+    """Replace our block while preserving prose and the profiles-owned block."""
+    if projects:
+        return build_projects_text(current, desired, legacy, begin, end, force)
+    if begin not in current and end not in current and current.strip():
+        outside = current.strip()
+        if canonical_text(outside) == canonical_text(legacy):
+            return canonical_text(desired)
+        routing = locate_block(current, ROUTING_BEGIN, ROUTING_END)
+        if routing:
+            start, stop, block = routing
+            outside = join_sections(current[:start], current[stop:]).strip()
+            return join_sections(outside, desired, block)
+        # Adoption keeps all existing user prose; it is never interpreted as
+        # manager-owned merely because it differs from a legacy template.
+        return join_sections(outside, desired)
+    return build_global_text(current, desired, legacy, begin, end, force)
+
+
+def instruction_targets(home: Path, projects_root: Path) -> dict[str, tuple[Path, str, str]]:
+    return {
+        "global": (home / "AGENTS.md", "global_begin", "global_end"),
+        "work": (home / "WORK.md", "global_begin", "global_end"),
+        "private": (home / "PRIVATE.md", "global_begin", "global_end"),
+        "projects": (projects_root / "AGENTS.md", "projects_begin", "projects_end"),
+    }
+
+
+def render_instruction_blocks(
+    repo_root: Path, manifest: dict[str, Any], private_root: Path
+) -> dict[str, str]:
+    layout = instruction_layout(manifest)
+    markers = manifest["markers"]
+    return {
+        name: render_fragment_block(
+            repo_root,
+            layout[f"{name}_fragments"],
+            markers[f"{name}_begin"],
+            markers[f"{name}_end"],
+            {"{{PRIVATE_ROOT}}": str(private_root.resolve())},
+        )
+        for name in ("global", "work", "private", "projects")
+        if layout[f"{name}_fragments"]
+    }
+
+
+def legacy_instruction_text(
+    repo_root: Path, manifest: dict[str, Any], name: str, private_root: Path
+) -> str:
+    layout = instruction_layout(manifest)
+    value = legacy_fragment_text(repo_root, layout[f"{name}_fragments"])
+    return value.replace("{{PRIVATE_ROOT}}", str(private_root.resolve()))
+
+
+def capture_private_root_tokens(value: str, private_root: Path) -> str:
+    """Store portable source tokens instead of the installation-specific path."""
+    rendered = str(private_root.resolve())
+    value = value.replace(rendered, "{{PRIVATE_ROOT}}")
+    if os.name == "nt":
+        value = re.sub(re.escape(rendered), "{{PRIVATE_ROOT}}", value, flags=re.IGNORECASE)
+    return value
+
+
 def check_target_unchanged(
     target: Path,
     previous_hashes: dict[str, str] | None,
@@ -1445,38 +1651,49 @@ def install_command(args: argparse.Namespace) -> None:
     )
 
     markers = manifest["markers"]
-    global_block = render_fragment_block(
-        repo_root,
-        config["global_fragments"],
-        markers["global_begin"],
-        markers["global_end"],
-    )
-    projects_block = render_fragment_block(
-        repo_root,
-        config["projects_fragments"],
-        markers["projects_begin"],
-        markers["projects_end"],
-    )
-    global_path = home / "AGENTS.md"
-    projects_path = projects_root / "AGENTS.md"
-    current_global = read_text(global_path) if global_path.exists() else ""
-    current_projects = read_text(projects_path) if projects_path.exists() else ""
-    new_global = build_global_text(
-        current_global,
-        global_block,
-        legacy_fragment_text(repo_root, config["global_fragments"]),
-        markers["global_begin"],
-        markers["global_end"],
-        args.force,
-    )
-    new_projects = build_projects_text(
-        current_projects,
-        projects_block,
-        legacy_fragment_text(repo_root, config["projects_fragments"]),
-        markers["projects_begin"],
-        markers["projects_end"],
-        args.force,
-    )
+    private_root = projects_root / "private"
+    instruction_blocks = render_instruction_blocks(repo_root, manifest, private_root)
+    targets = instruction_targets(home, projects_root)
+    current_instructions: dict[str, str] = {}
+    new_instructions: dict[str, str] = {}
+    owned_instruction_hashes = (previous or {}).get("instruction_block_sha256", {})
+    if previous and not owned_instruction_hashes:
+        owned_instruction_hashes = {
+            "global": previous.get("global_block_sha256"),
+            "projects": previous.get("projects_block_sha256"),
+        }
+    for name, (path, begin_key, end_key) in targets.items():
+        if name not in instruction_blocks:
+            continue
+        current = read_text(path) if path.exists() else ""
+        located = locate_block(current, markers[begin_key], markers[end_key])
+        expected_hash = owned_instruction_hashes.get(name)
+        if (
+            isinstance(expected_hash, str)
+            and (not located or sha256_text(located[2]) != expected_hash)
+            and not args.force
+        ):
+            raise ConfigError(
+                f"Installed {name} instructions have local edits; capture first or use --force"
+            )
+        current_instructions[name] = current
+        new_instructions[name] = managed_instruction_text(
+            current,
+            instruction_blocks[name],
+            legacy_instruction_text(repo_root, manifest, name, private_root),
+            markers[begin_key],
+            markers[end_key],
+            args.force,
+            projects=name == "projects",
+        )
+    global_block = instruction_blocks["global"]
+    projects_block = instruction_blocks["projects"]
+    global_path = targets["global"][0]
+    projects_path = targets["projects"][0]
+    current_global = current_instructions.get("global", "")
+    current_projects = current_instructions.get("projects", "")
+    new_global = new_instructions.get("global", current_global)
+    new_projects = new_instructions.get("projects", current_projects)
 
     previous_skills = previous.get("skills", {}) if previous else {}
     desired_names = list(config["skills"])
@@ -1525,6 +1742,11 @@ def install_command(args: argparse.Namespace) -> None:
                     != canonical_text(new_global),
                     "projects_agents_changed": canonical_text(current_projects)
                     != canonical_text(new_projects),
+                    "instruction_files_changed": {
+                        name: canonical_text(current_instructions.get(name, ""))
+                        != canonical_text(value)
+                        for name, value in new_instructions.items()
+                    },
                     "skills_root": str(skills_root),
                     "skills_install": desired_names,
                     "skills_remove": stale_names,
@@ -1545,6 +1767,8 @@ def install_command(args: argparse.Namespace) -> None:
         return
 
     manager_root = home / "codex-config"
+    if not args.dry_run:
+        recover_transactions(manager_root, home, projects_root, repo_root, project_root)
     restrict_private_directory(manager_root)
     staging_root = manager_root / f"txn-install-{uuid.uuid4().hex}"
     restrict_private_directory(staging_root)
@@ -1570,6 +1794,13 @@ def install_command(args: argparse.Namespace) -> None:
         projects_existed = backup_optional_file(
             projects_path, backups / "projects-agents.bin"
         )
+        instruction_existence = {"global": global_existed, "projects": projects_existed}
+        for name, (path, _begin, _end) in targets.items():
+            if name in {"global", "projects"} or name not in instruction_blocks:
+                continue
+            instruction_existence[name] = backup_optional_file(
+                path, backups / f"{name}-agents.bin"
+            )
         state_existed = backup_optional_file(state_path(home), backups / "state.json")
         skill_existence = {
             skill: (skills_root / skill).exists()
@@ -1617,6 +1848,11 @@ def install_command(args: argparse.Namespace) -> None:
                 "project_root": str(project_root),
                 "global_existed": global_existed,
                 "projects_existed": projects_existed,
+                "instruction_files": {
+                    name: {"path": str(targets[name][0]), "existed": existed}
+                    for name, existed in instruction_existence.items()
+                    if name not in {"global", "projects"}
+                },
                 "state_existed": state_existed,
                 "skills_root": str(skills_root),
                 "skills": skill_existence,
@@ -1645,6 +1881,10 @@ def install_command(args: argparse.Namespace) -> None:
         project_root.mkdir(parents=True, exist_ok=True)
         atomic_write_text(global_path, new_global)
         atomic_write_text(projects_path, new_projects)
+        for name, value in new_instructions.items():
+            if name in {"global", "projects"}:
+                continue
+            atomic_write_text(targets[name][0], value)
 
         skills_root.mkdir(parents=True, exist_ok=True)
         for skill in replacement_names:
@@ -1698,6 +1938,9 @@ def install_command(args: argparse.Namespace) -> None:
             "source_fingerprint": source_fingerprint(repo_root, manifest, args.profile),
             "global_block_sha256": sha256_text(global_block),
             "projects_block_sha256": sha256_text(projects_block),
+            "instruction_block_sha256": {
+                name: sha256_text(block) for name, block in instruction_blocks.items()
+            },
             "skills_root": str(skills_root),
             "skills": {
                 name: {"files": tree_hashes(skills_root / name)}
@@ -1748,6 +1991,7 @@ def status_command(args: argparse.Namespace) -> None:
         state, project_skills_root
     )
     markers = manifest["markers"]
+    instruction_hashes = state.get("instruction_block_sha256", {})
     skills = {
         name: tree_hashes(installed_skills_root / name) == entry.get("files", {})
         for name, entry in state.get("skills", {}).items()
@@ -1780,6 +2024,15 @@ def status_command(args: argparse.Namespace) -> None:
             markers["projects_end"],
         )
         == state.get("projects_block_sha256"),
+        "instructions": {
+            name: current_block_hash(
+                path,
+                markers[begin_key],
+                markers[end_key],
+            ) == instruction_hashes.get(name)
+            for name, (path, begin_key, end_key) in instruction_targets(home, projects_root).items()
+            if name in instruction_hashes
+        },
         "skills": skills,
         "project_skills": project_skills,
     }
@@ -1788,6 +2041,7 @@ def status_command(args: argparse.Namespace) -> None:
             result["source_in_sync"],
             result["global_agents_in_sync"],
             result["projects_agents_in_sync"],
+            *result["instructions"].values(),
             result["skills_location_current"],
             result["project_skills_location_current"],
             all(skills.values()),
@@ -1822,33 +2076,37 @@ def capture_command(args: argparse.Namespace) -> None:
     )
     config = profile_config(manifest, profile)
     markers = manifest["markers"]
-    global_located = locate_block(
-        read_text(home / "AGENTS.md"), markers["global_begin"], markers["global_end"]
-    )
-    projects_located = locate_block(
-        read_text(projects_root / "AGENTS.md"),
-        markers["projects_begin"],
-        markers["projects_end"],
-    )
-    if not global_located or not projects_located:
-        raise ConfigError("Installed managed instruction blocks are incomplete")
-    fragments = parse_fragment_block(
-        global_located[2], markers["global_begin"], markers["global_end"]
-    )
-    project_fragments = parse_fragment_block(
-        projects_located[2], markers["projects_begin"], markers["projects_end"]
-    )
-    expected_fragments = set(config["global_fragments"] + config["projects_fragments"])
-    if set(fragments) != set(config["global_fragments"]):
-        raise ConfigError(
-            "Installed global source markers do not match the active profile"
-        )
-    if set(project_fragments) != set(config["projects_fragments"]):
-        raise ConfigError(
-            "Installed Projects source markers do not match the active profile"
-        )
-    if set(fragments) | set(project_fragments) != expected_fragments:
-        raise ConfigError("Installed source markers do not match the active profile")
+    targets = instruction_targets(home, projects_root)
+    layout = instruction_layout(manifest)
+    captured_fragments: dict[str, str] = {}
+    located_blocks: dict[str, tuple[int, int, str]] = {}
+    for name, fragments_for_target in (
+        ("global", layout["global_fragments"]),
+        ("work", layout["work_fragments"]),
+        ("private", layout["private_fragments"]),
+        ("projects", layout["projects_fragments"]),
+    ):
+        if not fragments_for_target:
+            continue
+        path, begin_key, end_key = targets[name]
+        located = locate_block(read_text(path), markers[begin_key], markers[end_key])
+        if not located:
+            raise ConfigError(f"Installed {name} instruction block is missing")
+        located_blocks[name] = located
+        parts = parse_fragment_block(located[2], markers[begin_key], markers[end_key])
+        if set(parts) != set(fragments_for_target):
+            raise ConfigError(f"Installed {name} source markers do not match their managed sources")
+        for source, value in parts.items():
+            captured_fragments[source] = capture_private_root_tokens(
+                value, projects_root / "private"
+            )
+    expected_fragments = {
+        item for group in layout.values() for item in group
+    }
+    if set(captured_fragments) != expected_fragments:
+        raise ConfigError("Installed source markers do not match the instruction layout")
+    global_located = located_blocks["global"]
+    projects_located = located_blocks["projects"]
 
     # Installed plaintext is not compared with the source. Capturing
     # credentials is an explicit opt-in operation, separate from skill edits.
@@ -1981,7 +2239,7 @@ def capture_command(args: argparse.Namespace) -> None:
         )
         journal_written = True
 
-        for source, value in {**fragments, **project_fragments}.items():
+        for source, value in captured_fragments.items():
             atomic_write_text(relative_path(repo_root, source), value)
         for skill, staged in staged_skills.items():
             source_root = skill_source_path(repo_root, skill)
@@ -2005,6 +2263,10 @@ def capture_command(args: argparse.Namespace) -> None:
                 "source_fingerprint": source_fingerprint(repo_root, refreshed, profile),
                 "global_block_sha256": sha256_text(global_located[2]),
                 "projects_block_sha256": sha256_text(projects_located[2]),
+                "instruction_block_sha256": {
+                    name: sha256_text(located[2])
+                    for name, located in located_blocks.items()
+                },
                 "skills_root": str(installed_skills_root),
                 "skills": {
                     name: {"files": tree_hashes(installed_skills_root / name)}
@@ -2065,6 +2327,8 @@ def remove_command(args: argparse.Namespace) -> None:
     markers = manifest["markers"]
     global_path = home / "AGENTS.md"
     projects_path = projects_root / "AGENTS.md"
+    targets = instruction_targets(home, projects_root)
+    instruction_hashes = state.get("instruction_block_sha256", {})
     if not args.force:
         if current_block_hash(
             global_path, markers["global_begin"], markers["global_end"]
@@ -2078,6 +2342,11 @@ def remove_command(args: argparse.Namespace) -> None:
             raise ConfigError(
                 "The installed Projects AGENTS block has local edits; run capture first"
             )
+        for name in ("work", "private"):
+            if name in instruction_hashes:
+                path, begin_key, end_key = targets[name]
+                if current_block_hash(path, markers[begin_key], markers[end_key]) != instruction_hashes[name]:
+                    raise ConfigError(f"The installed {name} instructions have local edits; run capture first")
         for skill, entry in state.get("skills", {}).items():
             check_target_unchanged(
                 installed_skills_root / skill, entry.get("files"), False
@@ -2116,6 +2385,13 @@ def remove_command(args: argparse.Namespace) -> None:
         projects_existed = backup_optional_file(
             projects_path, backups / "projects-agents.bin"
         )
+        extra_instruction_files = {}
+        for name in ("work", "private"):
+            if name not in instruction_hashes:
+                continue
+            path = targets[name][0]
+            existed = backup_optional_file(path, backups / f"{name}-agents.bin")
+            extra_instruction_files[name] = {"path": str(path), "existed": existed}
         state_existed = backup_optional_file(state_path(home), backups / "state.json")
         skill_existence = {
             skill: (installed_skills_root / skill).exists()
@@ -2137,6 +2413,7 @@ def remove_command(args: argparse.Namespace) -> None:
                 "project_root": str(project_root),
                 "global_existed": global_existed,
                 "projects_existed": projects_existed,
+                "instruction_files": extra_instruction_files,
                 "state_existed": state_existed,
                 "skills_root": str(installed_skills_root),
                 "skills": skill_existence,
@@ -2177,6 +2454,16 @@ def remove_command(args: argparse.Namespace) -> None:
             atomic_write_text(projects_path, new_projects)
         else:
             projects_path.unlink(missing_ok=True)
+        for name in extra_instruction_files:
+            path, begin_key, end_key = targets[name]
+            new_text = remove_block(
+                read_text(path) if path.exists() else "",
+                markers[begin_key], markers[end_key],
+            )
+            if new_text:
+                atomic_write_text(path, new_text)
+            else:
+                path.unlink(missing_ok=True)
         state_path(home).unlink(missing_ok=True)
         mark_transaction_committed(staging_root)
         success = True
@@ -2194,14 +2481,168 @@ def remove_command(args: argparse.Namespace) -> None:
     print("Removed codex-config managed content")
 
 
+def sync_instructions_command(args: argparse.Namespace) -> None:
+    """Refresh only instruction documents and their ownership hashes."""
+    repo_root = args.repo.resolve()
+    home = args.home.resolve()
+    projects_root = args.projects_root.resolve()
+    project_root = resolve_project_root(args, repo_root)
+    manager_root = home / "codex-config"
+    manifest = load_manifest(repo_root, base_only=True)
+    layout = instruction_layout(manifest)
+    markers = manifest["markers"]
+    for group in layout.values():
+        for item in group:
+            source = relative_path(repo_root, item)
+            ensure_no_links(source, repo_root)
+            if not source.is_file():
+                raise ConfigError(f"Missing instruction fragment: {item}")
+    private_root = projects_root / "private"
+    blocks = render_instruction_blocks(repo_root, manifest, private_root)
+    targets = instruction_targets(home, projects_root)
+    state = load_state(home)
+    if state is not None and state["profile"] != args.profile:
+        raise ConfigError(
+            f"Installed profile is '{state['profile']}'; sync-instructions does not switch skill profiles"
+        )
+    installed_hashes = state.get("instruction_block_sha256", {}) if state else {}
+    if state and not installed_hashes:
+        installed_hashes = {
+            "global": state.get("global_block_sha256"),
+            "projects": state.get("projects_block_sha256"),
+        }
+    updated: dict[str, str] = {}
+    for name, block in blocks.items():
+        path, begin_key, end_key = targets[name]
+        current = read_text(path) if path.exists() else ""
+        located = locate_block(current, markers[begin_key], markers[end_key])
+        expected_hash = installed_hashes.get(name)
+        if expected_hash is not None and (
+            not located or sha256_text(located[2]) != expected_hash
+        ) and not args.force:
+            raise ConfigError(
+                f"Installed {name} instructions have local edits; capture first or use --force"
+            )
+        updated[name] = managed_instruction_text(
+            current,
+            block,
+            legacy_instruction_text(repo_root, manifest, name, private_root),
+            markers[begin_key],
+            markers[end_key],
+            bool(args.force),
+            projects=name == "projects",
+        )
+    if args.dry_run:
+        print(json.dumps({
+            "action": "sync-instructions",
+            "profile": args.profile,
+            "files_changed": {
+                name: canonical_text(read_text(targets[name][0]) if targets[name][0].exists() else "") != canonical_text(value)
+                for name, value in updated.items()
+            },
+            "skills_touched": False,
+            "auth_touched": False,
+            "config_touched": False,
+            "roles_touched": False,
+        }, indent=2))
+        return
+
+    if state is None:
+        state = {
+            "schema_version": 1,
+            "profile": args.profile,
+            "source_revision": source_revision(repo_root),
+            "source_fingerprint": source_fingerprint(repo_root, manifest, args.profile),
+            "global_block_sha256": sha256_text(blocks.get("global", "")),
+            "projects_block_sha256": sha256_text(blocks.get("projects", "")),
+            "skills_root": str(args.skills_root.resolve()),
+            "skills": {},
+            "project_skills_root": str(resolve_project_root(args, repo_root) / ".agents" / "skills"),
+            "project_skills": {},
+        }
+    elif state.get("profile") is not None and args.profile != state["profile"]:
+        raise ConfigError(
+            f"Installed profile is '{state['profile']}'; sync-instructions does not switch skill profiles"
+        )
+
+    restrict_private_directory(manager_root)
+    transaction = manager_root / f"txn-sync-instructions-{uuid.uuid4().hex}"
+    restrict_private_directory(transaction)
+    backups = transaction / "backups"
+    file_entries: list[dict[str, Any]] = []
+    state_existed = False
+    journal_written = False
+    success = False
+    try:
+        for index, name in enumerate(updated):
+            path = targets[name][0]
+            ensure_no_links(path, home if path.is_relative_to(home) else projects_root)
+            existed = backup_optional_file(path, backups / f"instruction-{index}.bin")
+            file_entries.append({"path": str(path), "existed": existed})
+        state_existed = backup_optional_file(state_path(home), backups / "state.json")
+        write_json(transaction / "journal.json", {
+            "schema_version": 1,
+            "phase": "prepared",
+            "operation": "sync-instructions",
+            "repo_root": str(repo_root),
+            "home": str(home),
+            "projects_root": str(projects_root),
+            "project_root": str(project_root),
+            "files": file_entries,
+            "state_existed": state_existed,
+            "skills": {},
+            "project_skills": {},
+        })
+        journal_written = True
+        for name, value in updated.items():
+            atomic_write_text(targets[name][0], value)
+        state.update({
+            "source_revision": source_revision(repo_root),
+            "source_fingerprint": source_fingerprint(repo_root, manifest, state["profile"]),
+            "instruction_block_sha256": {
+                name: sha256_text(block) for name, block in blocks.items()
+            },
+            "global_block_sha256": sha256_text(blocks.get("global", "")),
+            "projects_block_sha256": sha256_text(blocks.get("projects", "")),
+        })
+        write_json(state_path(home), state)
+        mark_transaction_committed(transaction)
+        success = True
+    except Exception:
+        if journal_written:
+            recover_transactions(
+                manager_root, home, projects_root, repo_root, project_root,
+            )
+        raise
+    finally:
+        if transaction.exists() and (success or not journal_written):
+            shutil.rmtree(transaction)
+    print(f"Synchronized codex-config instructions for '{args.profile}'")
+
+
 
 def validate_source(repo_root: Path, manifest: dict[str, Any]) -> None:
     markers = manifest["markers"]
-    marker_values = list(markers.values())
+    marker_values = [
+        markers[key]
+        for key in ("global_begin", "global_end", "projects_begin", "projects_end")
+    ]
     if len(marker_values) != len(set(marker_values)):
         raise ConfigError("Managed markers must be unique")
     all_skills: set[str] = set()
     all_project_skills: set[str] = set()
+    layout = instruction_layout(manifest)
+    for group, entries in layout.items():
+        for item in entries:
+            path = relative_path(repo_root, item)
+            ensure_no_links(path, repo_root)
+            if not path.is_file() or is_link_like(path):
+                raise ConfigError(f"Missing or unsafe instruction source: {item}")
+            content = read_text(path)
+            if ROUTING_BEGIN in content or ROUTING_END in content:
+                raise ConfigError(f"Base instructions must not contain routing markers: {item}")
+    if "private/AGENTS.md" in layout["work_fragments"]:
+        raise ConfigError("Work instructions must not include the private account source")
     for name, config in manifest["profiles"].items():
         if not isinstance(config, dict):
             raise ConfigError(f"Invalid profile: {name}")
@@ -2412,6 +2853,15 @@ def build_parser() -> argparse.ArgumentParser:
     remove.add_argument("--force", "-Force", action="store_true")
     remove.set_defaults(handler=remove_command)
 
+    sync_instructions = subparsers.add_parser(
+        "sync-instructions", help="Refresh only managed instruction documents"
+    )
+    add_location_arguments(sync_instructions)
+    sync_instructions.add_argument("--profile", "-Profile", choices=("work", "private"), required=True)
+    sync_instructions.add_argument("--dry-run", "-DryRun", action="store_true")
+    sync_instructions.add_argument("--force", "-Force", action="store_true")
+    sync_instructions.set_defaults(handler=sync_instructions_command)
+
     validate = subparsers.add_parser("validate")
     validate.add_argument("--repo", type=Path, default=REPO_ROOT)
     validate.add_argument("--base-only", "-BaseOnly", action="store_true")
@@ -2446,6 +2896,8 @@ def main() -> int:
                     raise ConfigError(
                         "An interrupted transaction must be recovered before dry-run"
                     )
+            if args.command == "sync-instructions":
+                validate_target_locations(home, projects_root, skills_root, project_root)
             args.handler(args)
             return 0
 

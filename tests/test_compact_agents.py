@@ -34,9 +34,21 @@ class CompactAgentInstructionsTests(unittest.TestCase):
             "temp/",
             ".gitignore",
             "PowerShell 7",
+            "Runtime instruction files",
+            "path component",
+            "temp/task-plans/",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, text)
+
+    def test_account_rules_are_split_into_sidecar_sources(self):
+        work = (ROOT / "work/AGENTS.md").read_text(encoding="utf-8")
+        private = (ROOT / "private/AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("corporate Git identity", work)
+        self.assertNotIn("personal", work.lower())
+        self.assertNotIn("private", work.lower())
+        self.assertIn("personal accounts", private)
+        self.assertIn("personal Git identity", private)
 
     def test_bot_release_and_keyboard_safety(self):
         text = (ROOT / "bots/AGENTS.md").read_text(encoding="utf-8")

@@ -21,7 +21,9 @@ public configuration repository.
 
 | Component | Target |
 | --- | --- |
-| Shared and profile instructions | `$CODEX_HOME/AGENTS.md` (managed block only) |
+| Shared instructions and profile metadata | `$CODEX_HOME/AGENTS.md` (managed blocks only) |
+| Work account policy | `$CODEX_HOME/WORK.md` (managed block only) |
+| Personal account policy | `$CODEX_HOME/PRIVATE.md` (managed block only) |
 | Shared bot contract | `$HOME/Projects/AGENTS.md` (managed block only) |
 | User-global skills | `$HOME/.agents/skills/<skill>` |
 | Project-scoped skills | `<project-root>/.agents/skills/<skill>` |
@@ -30,6 +32,10 @@ public configuration repository.
 The `work` and `private` profiles choose which skills belong to each scope
 through `manifest.json`. The manager installs only the selected profile's
 managed skill directories and preserves unrelated files and profile overlays.
+Both account sidecars are installed for automatic target-path selection: the
+runtime loads `PRIVATE.md` only for repositories under
+`<projects-root>/private` (the default `<projects-root>` is `$HOME/Projects`)
+and `WORK.md` elsewhere. `AGENTS.md` contains shared rules and that router.
 
 The canonical skill directory is `codex-skills/skills/<name>`, regardless
 of installation scope. Access bundles remain encrypted in its private Git
@@ -86,6 +92,11 @@ user files are preserved.
 # Inspect the installed profile and the two skill scopes
 ./manage.ps1 status
 
+# Refresh instructions only, without touching skills, auth, config.toml, or roles
+./manage.ps1 sync-instructions -Profile work
+# Use the same project root as install when it is customized
+./manage.ps1 sync-instructions -Profile work --projects-root D:/workspace
+
 # Capture managed local changes back to their original source repositories
 ./manage.ps1 capture -DryRun
 ./manage.ps1 capture
@@ -119,6 +130,9 @@ or machine-specific runtime files.
 
 The shared `AGENTS.md` includes Git integrity, least-privilege access,
 project-local temporary files, conventional commits, and validation guidance.
+`WORK.md` contains work account rules only. `PRIVATE.md` contains personal
+account rules. Both use the same codex-config markers and are installed so
+path-based selection works regardless of the skill profile.
 **Every Git repository task starts with `git fetch`** when a remote exists;
 fetch never implies permission to merge, reset, or force-push.
 
