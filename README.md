@@ -22,8 +22,9 @@ public configuration repository.
 | Component | Target |
 | --- | --- |
 | Shared instructions and profile metadata | `$CODEX_HOME/AGENTS.md` (managed blocks only) |
-| Work account policy | `$CODEX_HOME/WORK.md` (managed block only) |
-| Personal account policy | `$CODEX_HOME/PRIVATE.md` (managed block only) |
+| Work account policy (work profile) | `$CODEX_HOME/WORK.md` (managed block only) |
+| Personal account policy (work profile) | `$CODEX_HOME/PRIVATE.md` (managed block only) |
+| Personal account policy (private profile) | Inline in `$CODEX_HOME/AGENTS.md` |
 | Shared bot contract | `$HOME/Projects/AGENTS.md` (managed block only) |
 | User-global skills | `$HOME/.agents/skills/<skill>` |
 | Project-scoped skills | `<project-root>/.agents/skills/<skill>` |
@@ -32,10 +33,17 @@ public configuration repository.
 The `work` and `private` profiles choose which skills belong to each scope
 through `manifest.json`. The manager installs only the selected profile's
 managed skill directories and preserves unrelated files and profile overlays.
-Both account sidecars are installed for automatic target-path selection: the
-runtime loads `PRIVATE.md` only for repositories under
+The **work** profile installs both account sidecars for automatic target-path
+selection: the runtime loads `PRIVATE.md` only for repositories under
 `<projects-root>/private` (the default `<projects-root>` is `$HOME/Projects`)
-and `WORK.md` elsewhere. `AGENTS.md` contains shared rules and that router.
+and `WORK.md` elsewhere. Its `AGENTS.md` contains shared rules and the short
+router from `work/ROUTER.md`.
+
+The **private** profile installs shared rules and personal account policy
+together in one global `AGENTS.md`. It has no path-based account selection
+and creates neither account sidecar. Moving an older split private installation
+to this layout removes only codex-config's sidecar blocks. Other managers'
+blocks and user prose remain; a sidecar is deleted only when empty.
 
 The canonical skill directory is `codex-skills/skills/<name>`, regardless
 of installation scope. Access bundles remain encrypted in its private Git
@@ -96,6 +104,8 @@ user files are preserved.
 ./manage.ps1 sync-instructions -Profile work
 # Use the same project root as install when it is customized
 ./manage.ps1 sync-instructions -Profile work --projects-root D:/workspace
+# Restore a private installation to its single-file instruction layout
+./manage.ps1 sync-instructions -Profile private
 
 # Capture managed local changes back to their original source repositories
 ./manage.ps1 capture -DryRun
@@ -111,6 +121,13 @@ user files are preserved.
 
 The `update` command fetches both Git remotes and only pulls by fast-forward
 when the checkouts are clean. It refuses to overwrite uncommitted changes.
+
+Instruction refreshes preserve edits outside codex-config's owned blocks and
+refuse to overwrite changed owned blocks without `--force`. An unrecorded
+sidecar block can be retired only when it exactly matches a known generated
+block. Run `sync-instructions` before `capture` when upgrading an installation
+whose source markers describe an older layout; capture rejects mismatched
+layouts before writing sources.
 
 ## Encrypted access
 
@@ -130,9 +147,10 @@ or machine-specific runtime files.
 
 The shared `AGENTS.md` includes Git integrity, least-privilege access,
 project-local temporary files, conventional commits, and validation guidance.
-`WORK.md` contains work account rules only. `PRIVATE.md` contains personal
-account rules. Both use the same codex-config markers and are installed so
-path-based selection works regardless of the skill profile.
+In the work profile, `WORK.md` contains work account rules and `PRIVATE.md`
+contains personal account rules. Both use the same codex-config markers.
+The private profile includes `private/AGENTS.md` directly after shared rules
+in the global managed block. It does not include `work/ROUTER.md`.
 **Every Git repository task starts with `git fetch`** when a remote exists;
 fetch never implies permission to merge, reset, or force-push.
 

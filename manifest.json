@@ -18,7 +18,8 @@
   },
   "profiles": {
     "work": {
-      "global_fragments": ["AGENTS.md"],
+      "instruction_layout": "split",
+      "global_fragments": ["AGENTS.md", "work/ROUTER.md"],
       "projects_fragments": [
         "bots/AGENTS.md"
       ],
@@ -44,7 +45,8 @@
       ]
     },
     "private": {
-      "global_fragments": ["AGENTS.md"],
+      "instruction_layout": "inline",
+      "global_fragments": ["AGENTS.md", "private/AGENTS.md"],
       "projects_fragments": [
         "bots/AGENTS.md"
       ],

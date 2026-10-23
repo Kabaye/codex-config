@@ -218,6 +218,8 @@ def load_manifest(
         validate_safe_name(name, "profile name")
         if not isinstance(config, dict):
             raise ConfigError(f"Invalid profile: {name}")
+        if config.get("instruction_layout") not in (None, "split", "inline"):
+            raise ConfigError(f"Profile {name} has an invalid instruction_layout")
         for group in ("global_fragments", "projects_fragments"):
             values = config.get(group)
             if not isinstance(values, list) or not values:
@@ -266,19 +268,23 @@ def load_manifest(
     return manifest
 
 
-def instruction_layout(manifest: dict[str, Any]) -> dict[str, list[str]]:
-    """Return codex-config-owned instruction sources, independent of profile."""
+def instruction_layout(
+    manifest: dict[str, Any], profile: str
+) -> dict[str, list[str]]:
+    """Return the selected profile's instruction sources and runtime layout."""
+    config = profile_config(manifest, profile)
     configured = manifest.get("instructions")
-    if isinstance(configured, dict):
+    mode = config.get("instruction_layout")
+    if isinstance(configured, dict) and mode is None:
+        # Older split-layout manifests applied the same layout to all profiles.
         return configured
-    # Compatibility for v1 manifests used by older installations and callers.
-    profile = next(iter(manifest["profiles"].values()))
-    global_fragments = profile["global_fragments"]
+    if mode == "split" and not isinstance(configured, dict):
+        raise ConfigError(f"Profile {profile} requires account instruction sources")
     return {
-        "global_fragments": global_fragments,
-        "work_fragments": [],
-        "private_fragments": [],
-        "projects_fragments": profile["projects_fragments"],
+        "global_fragments": config["global_fragments"],
+        "work_fragments": configured["work_fragments"] if mode == "split" else [],
+        "private_fragments": configured["private_fragments"] if mode == "split" else [],
+        "projects_fragments": config["projects_fragments"],
     }
 
 
@@ -1290,7 +1296,7 @@ def source_fingerprint(
     config = profile_config(manifest, profile)
     source_repo = skills_repository_root(repo_root)
     paths: set[Path] = {repo_root / "manifest.json"}
-    instruction_groups = instruction_layout(manifest)
+    instruction_groups = instruction_layout(manifest, profile)
     for group in ("global_fragments", "projects_fragments"):
         for item in config[group]:
             paths.add(relative_path(repo_root, item))
@@ -1342,6 +1348,8 @@ def validate_target_locations(
 ) -> None:
     for path in (
         home / "AGENTS.md",
+        home / "WORK.md",
+        home / "PRIVATE.md",
         home / "codex-config",
     ):
         ensure_no_links(path, home)
@@ -1573,16 +1581,16 @@ def instruction_targets(home: Path, projects_root: Path) -> dict[str, tuple[Path
 
 
 def render_instruction_blocks(
-    repo_root: Path, manifest: dict[str, Any], private_root: Path
+    repo_root: Path, manifest: dict[str, Any], private_root: Path, profile: str
 ) -> dict[str, str]:
-    layout = instruction_layout(manifest)
+    layout = instruction_layout(manifest, profile)
     markers = manifest["markers"]
     return {
         name: render_fragment_block(
             repo_root,
             layout[f"{name}_fragments"],
-            markers[f"{name}_begin"],
-            markers[f"{name}_end"],
+            markers["projects_begin" if name == "projects" else "global_begin"],
+            markers["projects_end" if name == "projects" else "global_end"],
             {"{{PRIVATE_ROOT}}": str(private_root.resolve())},
         )
         for name in ("global", "work", "private", "projects")
@@ -1591,11 +1599,69 @@ def render_instruction_blocks(
 
 
 def legacy_instruction_text(
-    repo_root: Path, manifest: dict[str, Any], name: str, private_root: Path
+    repo_root: Path, manifest: dict[str, Any], name: str, private_root: Path,
+    profile: str,
 ) -> str:
-    layout = instruction_layout(manifest)
+    layout = instruction_layout(manifest, profile)
     value = legacy_fragment_text(repo_root, layout[f"{name}_fragments"])
     return value.replace("{{PRIVATE_ROOT}}", str(private_root.resolve()))
+
+
+def plan_instruction_changes(
+    repo_root: Path,
+    manifest: dict[str, Any],
+    profile: str,
+    private_root: Path,
+    targets: dict[str, tuple[Path, str, str]],
+    blocks: dict[str, str],
+    installed_hashes: dict[str, str],
+    force: bool,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Replace active blocks and retire only our blocks from inactive sidecars."""
+    current_documents: dict[str, str] = {}
+    updated: dict[str, str] = {}
+    markers = manifest["markers"]
+    for name, (path, begin_key, end_key) in targets.items():
+        current = read_text(path) if path.exists() else ""
+        located = locate_block(current, markers[begin_key], markers[end_key])
+        expected_hash = installed_hashes.get(name)
+        if expected_hash is not None and (
+            not located or sha256_text(located[2]) != expected_hash
+        ) and not force:
+            raise ConfigError(
+                f"Installed {name} instructions have local edits; capture first or use --force"
+            )
+        if name not in blocks and not located:
+            continue
+        current_documents[name] = current
+        if name not in blocks:
+            if expected_hash is None and located:
+                sources = manifest.get("instructions", {}).get(f"{name}_fragments", [])
+                known_block = render_fragment_block(
+                    repo_root, sources, markers[begin_key], markers[end_key],
+                    {"{{PRIVATE_ROOT}}": str(private_root.resolve())},
+                ) if sources else ""
+                if not known_block or sha256_text(located[2]) != sha256_text(known_block):
+                    raise ConfigError(
+                        f"Cannot retire unrecorded {name} instruction block: its content "
+                        "does not match a known generated block"
+                    )
+            updated[name] = remove_block(current, markers[begin_key], markers[end_key])
+        else:
+            updated[name] = managed_instruction_text(
+                current, blocks[name],
+                legacy_instruction_text(repo_root, manifest, name, private_root, profile),
+                markers[begin_key], markers[end_key], force,
+                projects=name == "projects",
+            )
+    return current_documents, updated
+
+
+def write_instruction_document(path: Path, value: str) -> None:
+    if value.strip():
+        atomic_write_text(path, value)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def capture_private_root_tokens(value: str, private_root: Path) -> str:
@@ -1652,40 +1718,18 @@ def install_command(args: argparse.Namespace) -> None:
 
     markers = manifest["markers"]
     private_root = projects_root / "private"
-    instruction_blocks = render_instruction_blocks(repo_root, manifest, private_root)
+    instruction_blocks = render_instruction_blocks(repo_root, manifest, private_root, args.profile)
     targets = instruction_targets(home, projects_root)
-    current_instructions: dict[str, str] = {}
-    new_instructions: dict[str, str] = {}
     owned_instruction_hashes = (previous or {}).get("instruction_block_sha256", {})
     if previous and not owned_instruction_hashes:
         owned_instruction_hashes = {
             "global": previous.get("global_block_sha256"),
             "projects": previous.get("projects_block_sha256"),
         }
-    for name, (path, begin_key, end_key) in targets.items():
-        if name not in instruction_blocks:
-            continue
-        current = read_text(path) if path.exists() else ""
-        located = locate_block(current, markers[begin_key], markers[end_key])
-        expected_hash = owned_instruction_hashes.get(name)
-        if (
-            isinstance(expected_hash, str)
-            and (not located or sha256_text(located[2]) != expected_hash)
-            and not args.force
-        ):
-            raise ConfigError(
-                f"Installed {name} instructions have local edits; capture first or use --force"
-            )
-        current_instructions[name] = current
-        new_instructions[name] = managed_instruction_text(
-            current,
-            instruction_blocks[name],
-            legacy_instruction_text(repo_root, manifest, name, private_root),
-            markers[begin_key],
-            markers[end_key],
-            args.force,
-            projects=name == "projects",
-        )
+    current_instructions, new_instructions = plan_instruction_changes(
+        repo_root, manifest, args.profile, private_root, targets,
+        instruction_blocks, owned_instruction_hashes, args.force,
+    )
     global_block = instruction_blocks["global"]
     projects_block = instruction_blocks["projects"]
     global_path = targets["global"][0]
@@ -1796,7 +1840,7 @@ def install_command(args: argparse.Namespace) -> None:
         )
         instruction_existence = {"global": global_existed, "projects": projects_existed}
         for name, (path, _begin, _end) in targets.items():
-            if name in {"global", "projects"} or name not in instruction_blocks:
+            if name in {"global", "projects"} or name not in new_instructions:
                 continue
             instruction_existence[name] = backup_optional_file(
                 path, backups / f"{name}-agents.bin"
@@ -1884,7 +1928,7 @@ def install_command(args: argparse.Namespace) -> None:
         for name, value in new_instructions.items():
             if name in {"global", "projects"}:
                 continue
-            atomic_write_text(targets[name][0], value)
+            write_instruction_document(targets[name][0], value)
 
         skills_root.mkdir(parents=True, exist_ok=True)
         for skill in replacement_names:
@@ -2077,7 +2121,7 @@ def capture_command(args: argparse.Namespace) -> None:
     config = profile_config(manifest, profile)
     markers = manifest["markers"]
     targets = instruction_targets(home, projects_root)
-    layout = instruction_layout(manifest)
+    layout = instruction_layout(manifest, profile)
     captured_fragments: dict[str, str] = {}
     located_blocks: dict[str, tuple[int, int, str]] = {}
     for name, fragments_for_target in (
@@ -2488,8 +2532,9 @@ def sync_instructions_command(args: argparse.Namespace) -> None:
     projects_root = args.projects_root.resolve()
     project_root = resolve_project_root(args, repo_root)
     manager_root = home / "codex-config"
+    validate_target_locations(home, projects_root, args.skills_root.resolve(), project_root)
     manifest = load_manifest(repo_root, base_only=True)
-    layout = instruction_layout(manifest)
+    layout = instruction_layout(manifest, args.profile)
     markers = manifest["markers"]
     for group in layout.values():
         for item in group:
@@ -2498,7 +2543,7 @@ def sync_instructions_command(args: argparse.Namespace) -> None:
             if not source.is_file():
                 raise ConfigError(f"Missing instruction fragment: {item}")
     private_root = projects_root / "private"
-    blocks = render_instruction_blocks(repo_root, manifest, private_root)
+    blocks = render_instruction_blocks(repo_root, manifest, private_root, args.profile)
     targets = instruction_targets(home, projects_root)
     state = load_state(home)
     if state is not None and state["profile"] != args.profile:
@@ -2511,27 +2556,10 @@ def sync_instructions_command(args: argparse.Namespace) -> None:
             "global": state.get("global_block_sha256"),
             "projects": state.get("projects_block_sha256"),
         }
-    updated: dict[str, str] = {}
-    for name, block in blocks.items():
-        path, begin_key, end_key = targets[name]
-        current = read_text(path) if path.exists() else ""
-        located = locate_block(current, markers[begin_key], markers[end_key])
-        expected_hash = installed_hashes.get(name)
-        if expected_hash is not None and (
-            not located or sha256_text(located[2]) != expected_hash
-        ) and not args.force:
-            raise ConfigError(
-                f"Installed {name} instructions have local edits; capture first or use --force"
-            )
-        updated[name] = managed_instruction_text(
-            current,
-            block,
-            legacy_instruction_text(repo_root, manifest, name, private_root),
-            markers[begin_key],
-            markers[end_key],
-            bool(args.force),
-            projects=name == "projects",
-        )
+    _current, updated = plan_instruction_changes(
+        repo_root, manifest, args.profile, private_root, targets,
+        blocks, installed_hashes, bool(args.force),
+    )
     if args.dry_run:
         print(json.dumps({
             "action": "sync-instructions",
@@ -2595,7 +2623,7 @@ def sync_instructions_command(args: argparse.Namespace) -> None:
         })
         journal_written = True
         for name, value in updated.items():
-            atomic_write_text(targets[name][0], value)
+            write_instruction_document(targets[name][0], value)
         state.update({
             "source_revision": source_revision(repo_root),
             "source_fingerprint": source_fingerprint(repo_root, manifest, state["profile"]),
@@ -2631,19 +2659,19 @@ def validate_source(repo_root: Path, manifest: dict[str, Any]) -> None:
         raise ConfigError("Managed markers must be unique")
     all_skills: set[str] = set()
     all_project_skills: set[str] = set()
-    layout = instruction_layout(manifest)
-    for group, entries in layout.items():
-        for item in entries:
-            path = relative_path(repo_root, item)
-            ensure_no_links(path, repo_root)
-            if not path.is_file() or is_link_like(path):
-                raise ConfigError(f"Missing or unsafe instruction source: {item}")
-            content = read_text(path)
-            if ROUTING_BEGIN in content or ROUTING_END in content:
-                raise ConfigError(f"Base instructions must not contain routing markers: {item}")
-    if "private/AGENTS.md" in layout["work_fragments"]:
-        raise ConfigError("Work instructions must not include the private account source")
     for name, config in manifest["profiles"].items():
+        layout = instruction_layout(manifest, name)
+        for entries in layout.values():
+            for item in entries:
+                path = relative_path(repo_root, item)
+                ensure_no_links(path, repo_root)
+                if not path.is_file() or is_link_like(path):
+                    raise ConfigError(f"Missing or unsafe instruction source: {item}")
+                content = read_text(path)
+                if ROUTING_BEGIN in content or ROUTING_END in content:
+                    raise ConfigError(f"Base instructions must not contain routing markers: {item}")
+        if "private/AGENTS.md" in layout["work_fragments"]:
+            raise ConfigError("Work instructions must not include the private account source")
         if not isinstance(config, dict):
             raise ConfigError(f"Invalid profile: {name}")
         for group in ("global_fragments", "projects_fragments"):

@@ -27,6 +27,9 @@ class InstructionLayoutTests(unittest.TestCase):
         (repo / "private").mkdir()
         (repo / "bots").mkdir()
         (repo / "AGENTS.md").write_text("shared rule\n", encoding="utf-8")
+        (repo / "work" / "ROUTER.md").write_text(
+            "Select PRIVATE.md below {{PRIVATE_ROOT}}; otherwise WORK.md.\n", encoding="utf-8"
+        )
         (repo / "work" / "AGENTS.md").write_text("work account rule\n", encoding="utf-8")
         (repo / "private" / "AGENTS.md").write_text("personal account rule\n", encoding="utf-8")
         (repo / "bots" / "AGENTS.md").write_text("bot rule\n", encoding="utf-8")
@@ -52,8 +55,8 @@ class InstructionLayoutTests(unittest.TestCase):
                 "projects_fragments": ["bots/AGENTS.md"],
             },
             "profiles": {
-                "work": {"global_fragments": ["AGENTS.md"], "projects_fragments": ["bots/AGENTS.md"], "skills": ["example"]},
-                "private": {"global_fragments": ["AGENTS.md"], "projects_fragments": ["bots/AGENTS.md"], "skills": ["example"]},
+                "work": {"instruction_layout": "split", "global_fragments": ["AGENTS.md", "work/ROUTER.md"], "projects_fragments": ["bots/AGENTS.md"], "skills": ["example"]},
+                "private": {"instruction_layout": "inline", "global_fragments": ["AGENTS.md", "private/AGENTS.md"], "projects_fragments": ["bots/AGENTS.md"], "skills": ["example"]},
             },
         }
         (repo / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -132,7 +135,7 @@ class InstructionLayoutTests(unittest.TestCase):
     def test_custom_private_root_capture_is_portable_and_root_boundary_is_component_based(self):
         with tempfile.TemporaryDirectory() as raw:
             args = self._fixture(Path(raw))
-            (args.repo / "AGENTS.md").write_text(
+            (args.repo / "work" / "ROUTER.md").write_text(
                 "Resolve {{PRIVATE_ROOT}} and compare path components.\n", encoding="utf-8"
             )
             manage.install_command(args)
@@ -140,7 +143,8 @@ class InstructionLayoutTests(unittest.TestCase):
             self.assertIn(str(rendered), (args.home / "AGENTS.md").read_text(encoding="utf-8"))
             self.assertNotIn(str(Path.home() / "Projects" / "private"), (args.home / "AGENTS.md").read_text(encoding="utf-8"))
             manage.capture_command(argparse.Namespace(**vars(args), capture_secrets=False))
-            self.assertIn("{{PRIVATE_ROOT}}", (args.repo / "AGENTS.md").read_text(encoding="utf-8"))
+            self.assertIn("{{PRIVATE_ROOT}}", (args.repo / "work" / "ROUTER.md").read_text(encoding="utf-8"))
+            self.assertEqual("shared rule\n", (args.repo / "AGENTS.md").read_text(encoding="utf-8"))
 
             root = rendered
             self.assertTrue(manage.is_path_within(root, root))
@@ -221,6 +225,178 @@ class InstructionLayoutTests(unittest.TestCase):
             (args.home / "WORK.md").write_text("user work content\n", encoding="utf-8")
             with self.assertRaises(manage.ConfigError):
                 manage.sync_instructions_command(argparse.Namespace(**{**vars(args), "dry_run": True}))
+
+    def test_fresh_private_install_capture_status_remove_uses_only_inline_policy(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._fixture(Path(raw))
+            args.profile = "private"
+            manage.install_command(args)
+            agents = (args.home / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertIn("shared rule", agents)
+            self.assertIn("personal account rule", agents)
+            self.assertNotIn("work account rule", agents)
+            self.assertNotIn("Select PRIVATE.md", agents)
+            self.assertFalse((args.home / "WORK.md").exists())
+            self.assertFalse((args.home / "PRIVATE.md").exists())
+            state = manage.load_state(args.home)
+            self.assertEqual({"global", "projects"}, set(state["instruction_block_sha256"]))
+            with mock.patch("builtins.print") as output:
+                manage.status_command(args)
+            self.assertTrue(json.loads(output.call_args.args[0])["healthy"])
+            (args.home / "AGENTS.md").write_text(
+                agents.replace("personal account rule", "updated personal account rule"), encoding="utf-8"
+            )
+            manage.capture_command(argparse.Namespace(**vars(args), capture_secrets=False))
+            self.assertEqual("shared rule\n", (args.repo / "AGENTS.md").read_text(encoding="utf-8"))
+            self.assertEqual("updated personal account rule\n", (args.repo / "private" / "AGENTS.md").read_text(encoding="utf-8"))
+            self.assertNotIn("personal", (args.repo / "work" / "ROUTER.md").read_text(encoding="utf-8"))
+            manage.remove_command(args)
+            self.assertFalse((args.home / "AGENTS.md").exists())
+
+    def _install_legacy_split_private(self, args):
+        path = args.repo / "manifest.json"
+        current_manifest = json.loads(path.read_text(encoding="utf-8"))
+        legacy = json.loads(json.dumps(current_manifest))
+        for config in legacy["profiles"].values():
+            config.pop("instruction_layout")
+        (args.repo / "AGENTS.md").write_text(
+            "shared rule\n\nSelect PRIVATE.md below {{PRIVATE_ROOT}}; otherwise WORK.md.\n", encoding="utf-8"
+        )
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+        args.profile = "private"
+        manage.install_command(args)
+        (args.repo / "AGENTS.md").write_text("shared rule\n", encoding="utf-8")
+        path.write_text(json.dumps(current_manifest), encoding="utf-8")
+
+    def test_private_split_migration_preserves_other_manager_and_user_content(self):
+        for command in (manage.install_command, manage.sync_instructions_command):
+            with self.subTest(command=command.__name__), tempfile.TemporaryDirectory() as raw:
+                args = self._fixture(Path(raw))
+                self._install_legacy_split_private(args)
+                foreign = "<!-- codex-profiles:begin -->\nother manager policy\n<!-- codex-profiles:end -->"
+                work = args.home / "WORK.md"
+                work.write_text("user policy\n\n" + work.read_text(encoding="utf-8") + "\n" + foreign + "\n", encoding="utf-8")
+                global_path = args.home / "AGENTS.md"
+                global_path.write_text(global_path.read_text(encoding="utf-8") + "\n" + foreign + "\n", encoding="utf-8")
+                before = {path: path.read_bytes() for path in args.home.rglob("*") if path.is_file()}
+                with mock.patch("builtins.print") as output:
+                    command(argparse.Namespace(**{**vars(args), "dry_run": True}))
+                result = json.loads(output.call_args.args[0])
+                changed = result.get("files_changed", result.get("instruction_files_changed"))
+                self.assertTrue(changed["work"])
+                self.assertTrue(changed["private"])
+                self.assertEqual(before, {path: path.read_bytes() for path in args.home.rglob("*") if path.is_file()})
+                command(args)
+                self.assertEqual("user policy\n\n" + foreign + "\n", work.read_text(encoding="utf-8"))
+                self.assertFalse((args.home / "PRIVATE.md").exists())
+                agents = global_path.read_text(encoding="utf-8")
+                self.assertIn("personal account rule", agents)
+                self.assertNotIn("Select PRIVATE.md", agents)
+                self.assertIn(foreign, agents)
+                self.assertLess(agents.index("<!-- codex-config:begin -->"), agents.index("<!-- codex-profiles:begin -->"))
+                self.assertEqual({"global", "projects"}, set(manage.load_state(args.home)["instruction_block_sha256"]))
+                manage.capture_command(argparse.Namespace(**vars(args), capture_secrets=False))
+                self.assertEqual("shared rule\n", (args.repo / "AGENTS.md").read_text(encoding="utf-8"))
+                self.assertEqual("personal account rule\n", (args.repo / "private" / "AGENTS.md").read_text(encoding="utf-8"))
+                manage.remove_command(args)
+                self.assertEqual("user policy\n\n" + foreign + "\n", work.read_text(encoding="utf-8"))
+                self.assertEqual(foreign + "\n", global_path.read_text(encoding="utf-8"))
+
+    def test_private_sync_from_legacy_inline_state_preserves_unmanaged_sidecars(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._fixture(Path(raw))
+            args.profile = "private"
+            manage.install_command(args)
+            state = manage.load_state(args.home)
+            state.pop("instruction_block_sha256")
+            manage.write_json(manage.state_path(args.home), state)
+            foreign = "<!-- codex-profiles:begin -->\nother manager policy\n<!-- codex-profiles:end -->\n"
+            (args.home / "WORK.md").write_text("unmanaged work prose\n", encoding="utf-8")
+            (args.home / "PRIVATE.md").write_text(foreign, encoding="utf-8")
+            manage.sync_instructions_command(args)
+            self.assertEqual("unmanaged work prose\n", (args.home / "WORK.md").read_text(encoding="utf-8"))
+            self.assertEqual(foreign, (args.home / "PRIVATE.md").read_text(encoding="utf-8"))
+
+    def test_legacy_inline_profiles_migrate_to_their_selected_layout(self):
+        for profile in ("work", "private"):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as raw:
+                args = self._fixture(Path(raw))
+                args.profile = profile
+                manifest_path = args.repo / "manifest.json"
+                current = json.loads(manifest_path.read_text(encoding="utf-8"))
+                legacy = json.loads(json.dumps(current))
+                legacy.pop("instructions")
+                for name, config in legacy["profiles"].items():
+                    config.pop("instruction_layout")
+                    config["global_fragments"] = ["AGENTS.md", f"{name}/AGENTS.md"]
+                manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
+                manage.install_command(args)
+                agents = (args.home / "AGENTS.md").read_text(encoding="utf-8")
+                self.assertIn("work account rule" if profile == "work" else "personal account rule", agents)
+                self.assertFalse((args.home / "WORK.md").exists())
+                self.assertFalse((args.home / "PRIVATE.md").exists())
+                manifest_path.write_text(json.dumps(current), encoding="utf-8")
+                manage.sync_instructions_command(args)
+                agents = (args.home / "AGENTS.md").read_text(encoding="utf-8")
+                if profile == "work":
+                    self.assertIn("Select PRIVATE.md", agents)
+                    self.assertNotIn("work account rule", agents)
+                    self.assertNotIn("personal account rule", agents)
+                    self.assertIn("work account rule", (args.home / "WORK.md").read_text(encoding="utf-8"))
+                    self.assertIn("personal account rule", (args.home / "PRIVATE.md").read_text(encoding="utf-8"))
+                else:
+                    self.assertNotIn("Select PRIVATE.md", agents)
+                    self.assertIn("personal account rule", agents)
+                    self.assertFalse((args.home / "WORK.md").exists())
+                    self.assertFalse((args.home / "PRIVATE.md").exists())
+
+    def test_unrecorded_sidecars_require_known_generated_content_before_retirement(self):
+        for known in (True, False):
+            with self.subTest(known=known), tempfile.TemporaryDirectory() as raw:
+                args = self._fixture(Path(raw))
+                args.profile = "private"
+                args.home.mkdir()
+                manifest = manage.load_manifest(args.repo)
+                content = manage.render_fragment_block(
+                    args.repo, ["work/AGENTS.md"], manifest["markers"]["global_begin"], manifest["markers"]["global_end"]
+                )
+                if not known:
+                    content = content.replace("work account rule", "unknown customized rule")
+                work = args.home / "WORK.md"
+                work.write_text(content + "\n", encoding="utf-8")
+                if known:
+                    manage.sync_instructions_command(args)
+                    self.assertFalse(work.exists())
+                else:
+                    before = work.read_bytes()
+                    with self.assertRaisesRegex(manage.ConfigError, "Cannot retire unrecorded"):
+                        manage.sync_instructions_command(args)
+                    self.assertEqual(before, work.read_bytes())
+                    self.assertFalse(manage.state_path(args.home).exists())
+
+    def test_private_migration_failure_restores_deleted_sidecars_and_state(self):
+        for command in (manage.install_command, manage.sync_instructions_command):
+            with self.subTest(command=command.__name__), tempfile.TemporaryDirectory() as raw:
+                args = self._fixture(Path(raw))
+                self._install_legacy_split_private(args)
+                files = [args.home / name for name in ("AGENTS.md", "WORK.md", "PRIVATE.md")]
+                files += [args.projects_root / "AGENTS.md", manage.state_path(args.home)]
+                before = {path: path.read_bytes() for path in files}
+                with mock.patch.object(manage, "mark_transaction_committed", side_effect=OSError("synthetic commit failure")):
+                    with self.assertRaises(OSError):
+                        command(args)
+                self.assertEqual(before, {path: path.read_bytes() for path in files})
+                self.assertFalse(list((args.home / "codex-config").glob("txn-*")))
+
+    def test_capture_requires_matching_layout_before_writing_any_sources(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._fixture(Path(raw))
+            self._install_legacy_split_private(args)
+            paths = [args.repo / name for name in ("AGENTS.md", "work/ROUTER.md", "work/AGENTS.md", "private/AGENTS.md")]
+            before = {path: path.read_bytes() for path in paths}
+            with self.assertRaisesRegex(manage.ConfigError, "source markers"):
+                manage.capture_command(argparse.Namespace(**vars(args), capture_secrets=False))
+            self.assertEqual(before, {path: path.read_bytes() for path in paths})
 
     def test_sync_rolls_back_instruction_files_and_state_after_write_failure(self):
         with tempfile.TemporaryDirectory() as raw:
