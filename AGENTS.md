@@ -4,7 +4,8 @@
 - Use Conventional Commits.
 - Never force-push unless the user explicitly requests it.
 ## Access and authorization
-- Never commit secrets or private information, including credentials, decrypted access files, payment card numbers, passport details, and real financial transactions.
+- Treat every repository as public, even if marked private.
+- Never commit secrets or private information in files or Git metadata. Use synthetic data and portable placeholders instead of personal, financial or infrastructure details.
 - Display secrets or private information only when the user explicitly requests those details.
 ## Files and tooling
 - Keep agent-only scratch files, downloads, one-off scripts, and logs in the project's `temp/`; add `temp/` to `.gitignore`.
