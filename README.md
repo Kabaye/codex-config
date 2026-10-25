@@ -25,7 +25,8 @@ public configuration repository.
 | Work account policy (work profile) | `$CODEX_HOME/WORK.md` (managed block only) |
 | Personal account policy (work profile) | `$CODEX_HOME/PRIVATE.md` (managed block only) |
 | Personal account policy (private profile) | Inline in `$CODEX_HOME/AGENTS.md` |
-| Shared bot contract | `$HOME/Projects/AGENTS.md` (managed block only) |
+| Shared bot rules source | `<projects-root>/AGENTS.md` (managed block only; defaults to `$HOME/Projects`) |
+| Bot repository rules | `<bot-repo>/AGENTS.md` (common block synchronized by the agent before implementation) |
 | User-global skills | `$HOME/.agents/skills/<skill>` |
 | Project-scoped skills | `<project-root>/.agents/skills/<skill>` |
 | Installation state and rollback transactions | `$CODEX_HOME/codex-config/` |
@@ -156,7 +157,12 @@ fetch never implies permission to merge, reset, or force-push.
 
 The optional `CODEX_PROJECT_STYLE.md` is a reusable reference for organizing
 Codex projects. The `bots/AGENTS.md` file provides general Telegram bot
-release-communication and interaction conventions.
+release-communication and interaction conventions. The global instructions point
+to its installed copy in `<projects-root>/AGENTS.md`. Before implementing a
+Telegram bot change, the agent synchronizes these rules into the repository's
+`AGENTS.md`, between `<!-- codex-config:bots:begin -->` and
+`<!-- codex-config:bots:end -->`, preserving other content. Each bot repository
+keeps the same common rules; subsequent bot work refreshes a stale copy.
 
 Model routing is intentionally out of scope: use
 [codex-profiles](https://github.com/Kabaye/codex-profiles) for

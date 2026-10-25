@@ -153,6 +153,82 @@ class InstructionLayoutTests(unittest.TestCase):
             self.assertTrue(manage.is_path_within(Path(str(root).upper()) / "NESTED", root, windows=True))
             self.assertFalse(manage.is_path_within(root.parent / "private-ish", root, windows=True))
 
+    def test_projects_rule_source_uses_default_and_custom_target_roots(self):
+        for command in ("install", "sync-instructions"):
+            for profile in ("work", "private"):
+                for custom_root in (False, True):
+                    with self.subTest(command=command, profile=profile, custom_root=custom_root), tempfile.TemporaryDirectory() as raw:
+                        root = Path(raw)
+                        fixture = self._fixture(root)
+                        source = "shared rule\nRead {{PROJECTS_ROOT}}/AGENTS.md before bot work.\n"
+                        (fixture.repo / "AGENTS.md").write_text(source, encoding="utf-8")
+                        cli = [
+                            command, "--profile", profile, "--repo", str(fixture.repo),
+                            "--home", str(fixture.home), "--skills-root", str(fixture.skills_root),
+                            "--project-root", str(fixture.repo),
+                        ]
+                        if custom_root:
+                            cli += ["--projects-root", str(root / "custom workspace")]
+                        with mock.patch.object(Path, "home", return_value=root / "user"):
+                            args = manage.build_parser().parse_args(cli)
+                        expected_root = root / ("custom workspace" if custom_root else "user/Projects")
+                        self.assertEqual(expected_root, args.projects_root)
+                        args.home.mkdir()
+                        foreign = "<!-- codex-profiles:begin -->\nother manager policy\n<!-- codex-profiles:end -->"
+                        (args.home / "AGENTS.md").write_text("user home prose\n\n" + foreign + "\n", encoding="utf-8")
+                        args.projects_root.mkdir(parents=True)
+                        (args.projects_root / "AGENTS.md").write_text(
+                            "user project prose\n\n<!-- codex-config:projects:begin -->\n"
+                            "bot rule\n<!-- codex-config:projects:end -->\n", encoding="utf-8"
+                        )
+
+                        args.handler(args)
+
+                        installed = (args.home / "AGENTS.md").read_text(encoding="utf-8")
+                        self.assertIn(f"Read {expected_root.resolve().as_posix()}/AGENTS.md before bot work.", installed)
+                        self.assertNotIn("{{PROJECTS_ROOT}}", installed)
+                        self.assertIn("user home prose", installed)
+                        self.assertIn(foreign, installed)
+                        self.assertIn("user project prose", (args.projects_root / "AGENTS.md").read_text(encoding="utf-8"))
+                        self.assertIn("bot rule", (args.projects_root / "AGENTS.md").read_text(encoding="utf-8"))
+                        self.assertEqual(profile == "work", (args.home / "WORK.md").exists())
+                        self.assertEqual(profile == "work", (args.home / "PRIVATE.md").exists())
+                        self.assertEqual(source, (args.repo / "AGENTS.md").read_text(encoding="utf-8"))
+
+    def test_capture_restores_projects_and_private_tokens_in_each_layout(self):
+        for profile in ("work", "private"):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as raw:
+                args = self._fixture(Path(raw))
+                args.profile = profile
+                args.projects_root = Path(raw) / "custom workspace"
+                shared = "shared rule\nCanonical source: {{PROJECTS_ROOT}}/AGENTS.md.\nPrivate root: {{PRIVATE_ROOT}}.\nKeep source note.\n"
+                bots = "bot rule\nCanonical source: {{PROJECTS_ROOT}}/AGENTS.md.\n"
+                (args.repo / "AGENTS.md").write_text(shared, encoding="utf-8")
+                (args.repo / "bots" / "AGENTS.md").write_text(bots, encoding="utf-8")
+                manage.install_command(args)
+                foreign = "<!-- codex-profiles:begin -->\nother manager policy\n<!-- codex-profiles:end -->"
+                agents = args.home / "AGENTS.md"
+                projects = args.projects_root / "AGENTS.md"
+                installed = agents.read_text(encoding="utf-8").replace("shared rule", "updated shared rule")
+                if manage.os.name == "nt":
+                    # Capture accepts Windows path spelling changes without storing them.
+                    installed = installed.replace(args.projects_root.resolve().as_posix(), str(args.projects_root.resolve()).upper())
+                agents.write_text("user home prose\n\n" + installed + "\n" + foreign + "\n", encoding="utf-8")
+                projects.write_text("user project prose\n\n" + projects.read_text(encoding="utf-8").replace("bot rule", "updated bot rule"), encoding="utf-8")
+                installed_before = {path: path.read_bytes() for path in (agents, projects)}
+                router_before = (args.repo / "work" / "ROUTER.md").read_text(encoding="utf-8")
+
+                manage.capture_command(argparse.Namespace(**vars(args), capture_secrets=False))
+
+                self.assertEqual(shared.replace("shared rule", "updated shared rule"), (args.repo / "AGENTS.md").read_text(encoding="utf-8"))
+                self.assertEqual(bots.replace("bot rule", "updated bot rule"), (args.repo / "bots" / "AGENTS.md").read_text(encoding="utf-8"))
+                self.assertEqual(router_before, (args.repo / "work" / "ROUTER.md").read_text(encoding="utf-8"))
+                self.assertEqual(installed_before, {path: path.read_bytes() for path in (agents, projects)})
+                for source in args.repo.rglob("*.md"):
+                    content = source.read_text(encoding="utf-8")
+                    self.assertNotIn(str(args.projects_root.resolve()).casefold(), content.casefold())
+                    self.assertNotIn(args.projects_root.resolve().as_posix().casefold(), content.casefold())
+
     def test_sync_without_previous_install_creates_reusable_valid_state(self):
         with tempfile.TemporaryDirectory() as raw:
             args = self._fixture(Path(raw))

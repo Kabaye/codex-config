@@ -17,6 +17,7 @@
 ## Work and verification
 - Run focused tests while implementing; run broader checks after the full implementation.
 - Store task workflow files in `temp/task-plans/`.
+- For Telegram bot projects, read the `bots/AGENTS.md` rules in `{{PROJECTS_ROOT}}/AGENTS.md`. Before implementation, synchronize them into a `codex-config:bots` block in the repository's `AGENTS.md` and follow them; preserve the rest of the file.
 ## Reporting
 - Be precise, distinguish verified facts from assumptions, and prefer clear explanations or diagrams when they help.
 - Keep external tickets, reviews, and release notes focused on observable changes, not raw agent logs.

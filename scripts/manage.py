@@ -1580,6 +1580,13 @@ def instruction_targets(home: Path, projects_root: Path) -> dict[str, tuple[Path
     }
 
 
+def instruction_path_replacements(private_root: Path) -> dict[str, str]:
+    return {
+        "{{PRIVATE_ROOT}}": str(private_root.resolve()),
+        "{{PROJECTS_ROOT}}": private_root.parent.resolve().as_posix(),
+    }
+
+
 def render_instruction_blocks(
     repo_root: Path, manifest: dict[str, Any], private_root: Path, profile: str
 ) -> dict[str, str]:
@@ -1591,7 +1598,7 @@ def render_instruction_blocks(
             layout[f"{name}_fragments"],
             markers["projects_begin" if name == "projects" else "global_begin"],
             markers["projects_end" if name == "projects" else "global_end"],
-            {"{{PRIVATE_ROOT}}": str(private_root.resolve())},
+            instruction_path_replacements(private_root),
         )
         for name in ("global", "work", "private", "projects")
         if layout[f"{name}_fragments"]
@@ -1604,7 +1611,9 @@ def legacy_instruction_text(
 ) -> str:
     layout = instruction_layout(manifest, profile)
     value = legacy_fragment_text(repo_root, layout[f"{name}_fragments"])
-    return value.replace("{{PRIVATE_ROOT}}", str(private_root.resolve()))
+    for token, rendered in instruction_path_replacements(private_root).items():
+        value = value.replace(token, rendered)
+    return value
 
 
 def plan_instruction_changes(
@@ -1639,7 +1648,7 @@ def plan_instruction_changes(
                 sources = manifest.get("instructions", {}).get(f"{name}_fragments", [])
                 known_block = render_fragment_block(
                     repo_root, sources, markers[begin_key], markers[end_key],
-                    {"{{PRIVATE_ROOT}}": str(private_root.resolve())},
+                    instruction_path_replacements(private_root),
                 ) if sources else ""
                 if not known_block or sha256_text(located[2]) != sha256_text(known_block):
                     raise ConfigError(
@@ -1664,12 +1673,15 @@ def write_instruction_document(path: Path, value: str) -> None:
         path.unlink(missing_ok=True)
 
 
-def capture_private_root_tokens(value: str, private_root: Path) -> str:
-    """Store portable source tokens instead of the installation-specific path."""
-    rendered = str(private_root.resolve())
-    value = value.replace(rendered, "{{PRIVATE_ROOT}}")
-    if os.name == "nt":
-        value = re.sub(re.escape(rendered), "{{PRIVATE_ROOT}}", value, flags=re.IGNORECASE)
+def capture_instruction_path_tokens(value: str, private_root: Path) -> str:
+    """Store portable source tokens instead of installation-specific paths."""
+    # Replace the nested private root before its projects-root prefix.
+    for token, rendered in instruction_path_replacements(private_root).items():
+        if os.name == "nt":
+            for variant in {rendered.replace("\\", "/"), rendered.replace("/", "\\")}:
+                value = re.sub(re.escape(variant), token, value, flags=re.IGNORECASE)
+        else:
+            value = value.replace(rendered, token)
     return value
 
 
@@ -2141,7 +2153,7 @@ def capture_command(args: argparse.Namespace) -> None:
         if set(parts) != set(fragments_for_target):
             raise ConfigError(f"Installed {name} source markers do not match their managed sources")
         for source, value in parts.items():
-            captured_fragments[source] = capture_private_root_tokens(
+            captured_fragments[source] = capture_instruction_path_tokens(
                 value, projects_root / "private"
             )
     expected_fragments = {
