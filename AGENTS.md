@@ -12,6 +12,7 @@
 - Verify required tools before use.
 - On Windows, use PowerShell 7 (`pwsh`).
 - Install standalone user tools under `$HOME/Programs`.
+- Name each skill's runtime directory after the skill.
 - Install project dependencies in the project's environment.
 - Report installed tools/dependencies and their purpose in the final response.
 ## Work and verification
