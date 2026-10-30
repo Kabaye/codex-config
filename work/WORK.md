@@ -1,2 +1,3 @@
 - Use work accounts for work tasks and keep their access separate.
 - Use the corporate Git identity in work repositories.
+- Webex CLI (`$HOME/Programs/webex-cli/webex.exe`) is available for work communication with people; send messages only when explicitly requested by the user.
