@@ -37,8 +37,10 @@ managed skill directories and preserves unrelated files and profile overlays.
 The **work** profile installs both account sidecars for automatic target-path
 selection: the runtime loads `PRIVATE.md` only for repositories under
 `<projects-root>/private` (the default `<projects-root>` is `$HOME/Projects`)
-and `WORK.md` elsewhere. Its `AGENTS.md` contains shared rules and the short
-router from `work/ROUTER.md`.
+and `WORK.md` elsewhere. Its global `AGENTS.md` is assembled from the shared
+`AGENTS.md` and `work/AGENTS.md` (including account routing and policy preflight).
+The work account policy itself is sourced from `work/WORK.md` and written to
+`WORK.md`; the personal account policy is sourced from `private/AGENTS.md`.
 
 The **private** profile installs shared rules and personal account policy
 together in one global `AGENTS.md`. It has no path-based account selection
@@ -151,7 +153,7 @@ project-local temporary files, conventional commits, and validation guidance.
 In the work profile, `WORK.md` contains work account rules and `PRIVATE.md`
 contains personal account rules. Both use the same codex-config markers.
 The private profile includes `private/AGENTS.md` directly after shared rules
-in the global managed block. It does not include `work/ROUTER.md`.
+in the global managed block. It does not include `work/AGENTS.md`.
 **Every Git repository task starts with `git fetch`** when a remote exists;
 fetch never implies permission to merge, reset, or force-push.
 
