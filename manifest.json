@@ -11,15 +11,26 @@
     "private_end": "<!-- codex-config:end -->"
   },
   "instructions": {
-    "global_fragments": ["AGENTS.md"],
-    "work_fragments": ["work/AGENTS.md"],
-    "private_fragments": ["private/AGENTS.md"],
-    "projects_fragments": ["bots/AGENTS.md"]
+    "global_fragments": [
+      "AGENTS.md"
+    ],
+    "work_fragments": [
+      "work/WORK.md"
+    ],
+    "private_fragments": [
+      "private/AGENTS.md"
+    ],
+    "projects_fragments": [
+      "bots/AGENTS.md"
+    ]
   },
   "profiles": {
     "work": {
       "instruction_layout": "split",
-      "global_fragments": ["AGENTS.md", "work/ROUTER.md"],
+      "global_fragments": [
+        "AGENTS.md",
+        "work/AGENTS.md"
+      ],
       "projects_fragments": [
         "bots/AGENTS.md"
       ],
@@ -46,7 +57,10 @@
     },
     "private": {
       "instruction_layout": "inline",
-      "global_fragments": ["AGENTS.md", "private/AGENTS.md"],
+      "global_fragments": [
+        "AGENTS.md",
+        "private/AGENTS.md"
+      ],
       "projects_fragments": [
         "bots/AGENTS.md"
       ],
