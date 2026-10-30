@@ -1,6 +1,7 @@
 ## Policy before work
 - At the start of every user request, before any task action or delegation, load the applicable runtime policy. The only tool calls allowed before loading it are those needed to identify the target repository and read that policy.
 - In the `work` profile, read `WORK.md` or `PRIVATE.md` selected by the target-path router from nonempty `$CODEX_HOME` (otherwise `~/.codex`). In the `private` profile, the policy is already inline in this `AGENTS.md`. If the required policy is missing or unreadable, stop and report instead of proceeding without it.
+- In the `work` profile, loading the selected `WORK.md` or `PRIVATE.md` is a blocking preflight for **every new user request**: complete its read in a separate tool call and inspect the returned policy before any task action or delegation. Do not combine policy reading with work in one command or parallel tool batch, including native `spawn_agent`, OpenCode or Cursor launches. A policy remembered from an earlier request does not replace a fresh read. Re-select and re-read the policy if the target repository changes.
 
 ## Git and workspace
 - **Before every task in a Git repository with a remote, run `git fetch`.**
