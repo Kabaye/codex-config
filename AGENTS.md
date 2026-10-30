@@ -1,3 +1,7 @@
+## Policy before work
+- At the start of every user request, before any task action or delegation, load the applicable runtime policy. The only tool calls allowed before loading it are those needed to identify the target repository and read that policy.
+- In the `work` profile, read `WORK.md` or `PRIVATE.md` selected by the target-path router from nonempty `$CODEX_HOME` (otherwise `~/.codex`). In the `private` profile, the policy is already inline in this `AGENTS.md`. If the required policy is missing or unreadable, stop and report instead of proceeding without it.
+
 ## Git and workspace
 - **Before every task in a Git repository with a remote, run `git fetch`.**
 - Create worktrees only when the user explicitly requests one.
