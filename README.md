@@ -40,7 +40,9 @@ selection: the runtime loads `PRIVATE.md` only for repositories under
 and `WORK.md` elsewhere. Its global `AGENTS.md` is assembled from the shared
 `AGENTS.md` and `work/AGENTS.md` (including account routing and policy preflight).
 The work account policy itself is sourced from `work/WORK.md` and written to
-`WORK.md`; the personal account policy is sourced from `private/AGENTS.md`.
+`WORK.md`; the personal policy on the work computer is sourced from
+`work/PRIVATE.md` and written to `PRIVATE.md`. This source is independent of
+the separate `private` profile.
 
 The **private** profile installs shared rules and personal account policy
 together in one global `AGENTS.md`. It has no path-based account selection
@@ -153,7 +155,8 @@ project-local temporary files, conventional commits, and validation guidance.
 In the work profile, `WORK.md` contains work account rules and `PRIVATE.md`
 contains personal account rules. Both use the same codex-config markers.
 The private profile includes `private/AGENTS.md` directly after shared rules
-in the global managed block. It does not include `work/AGENTS.md`.
+in the global managed block. It does not include `work/AGENTS.md` or
+`work/PRIVATE.md`; the two profiles maintain independent personal policies.
 **Every Git repository task starts with `git fetch`** when a remote exists;
 fetch never implies permission to merge, reset, or force-push.
 
