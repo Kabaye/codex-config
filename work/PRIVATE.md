@@ -1,0 +1,3 @@
+- Use personal accounts and credentials only for explicitly authorized tasks; an installed skill does not grant access.
+- Password-manager CLIs and elevated authentication tools require explicit authorization.
+- Use the personal Git identity in personal repositories.
