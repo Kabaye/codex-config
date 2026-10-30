@@ -1,0 +1,2 @@
+- Use work accounts for work tasks and keep their access separate.
+- Use the corporate Git identity in work repositories.
