@@ -57,9 +57,10 @@ history; they are decrypted only on an authorized user's machine.
 Both profiles install `access-mode` for shared SSH source selection. The default
 `agent` mode uses 1Password; the user can select `file` mode for unattended work.
 An explicit `access-personal` exception in agent mode lasts 60 minutes for one
-chat and resource. Mode and expiry are checked by the helpers for each new
-connection; they do not change the authorization of the task itself. Optional
-native context hooks require the user's normal Codex hook review and trust.
+chat and resource. The SSH helper reads the current mode and checks expiry for
+each new connection. Changes apply to existing chats on their next connection;
+no hooks or background process are required. The task must still authorize the
+resource and action.
 
 ## Prerequisites
 
