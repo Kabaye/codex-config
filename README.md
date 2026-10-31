@@ -54,6 +54,13 @@ The canonical skill directory is `codex-skills/skills/<name>`, regardless
 of installation scope. Access bundles remain encrypted in its private Git
 history; they are decrypted only on an authorized user's machine.
 
+Both profiles install `access-mode` for shared SSH source selection. The default
+`agent` mode uses 1Password; the user can select `file` mode for unattended work.
+An explicit `access-personal` exception in agent mode lasts 60 minutes for one
+chat and resource. Mode and expiry are checked by the helpers for each new
+connection; they do not change the authorization of the task itself. Optional
+native context hooks require the user's normal Codex hook review and trust.
+
 ## Prerequisites
 
 - Git
