@@ -63,6 +63,12 @@ the installed profile, current mode and expiry for each new connection.
 Existing connections continue unchanged. No hooks or background process are
 required; the task must still authorize the resource and action.
 
+SSH resource bindings live outside Git in the local `access-personal` runtime.
+Bind a verified server endpoint, known-hosts file and public-key fingerprint once;
+subsequent connections need only the resource ID. Key labels and their language
+do not affect selection. Missing bindings or conflicting manual connection
+parameters stop before authentication. Real bindings never belong in this repo.
+
 Skills can provide profile overrides under `profiles/<profile>/`. Installation
 overlays those files onto the common skill and omits the source variants from
 the installed copy. Capture routes changes to selected overrides back to that
