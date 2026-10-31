@@ -36,7 +36,6 @@
       ],
       "skills": [
         "access-work",
-        "access-mode",
         "access-personal",
         "issue-delivery",
         "gitlab-mr-review",
@@ -66,7 +65,6 @@
         "bots/AGENTS.md"
       ],
       "skills": [
-        "access-mode",
         "access-personal",
         "better-codex",
         "task-capture",

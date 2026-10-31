@@ -584,25 +584,100 @@ def tree_hashes(root: Path) -> dict[str, str]:
     }
 
 
-def copy_source_skill(source: Path, destination: Path) -> None:
+def skill_profile_sources(source: Path) -> dict[str, Path]:
+    """Validate profile variants, including variants not selected for install."""
+    variants = source / "profiles"
+    ensure_no_links(variants, source)
+    if not variants.exists():
+        return {}
+    if not variants.is_dir():
+        raise ConfigError(f"Skill profiles must be a directory: {variants}")
+    result: dict[str, Path] = {}
+    for variant in sorted(variants.iterdir()):
+        validate_safe_name(variant.name, "skill profile name")
+        if is_link_like(variant) or not variant.is_dir():
+            raise ConfigError(f"Missing or unsafe skill profile: {variant}")
+        for path in iter_tree_files(variant):
+            relative = path.relative_to(variant)
+            validate_relative_value(relative.as_posix(), "skill profile file")
+            if relative.parts[0].casefold() == "profiles":
+                raise ConfigError(f"Nested skill profiles are not allowed: {path}")
+            if path.name == "access.yml":
+                raise ConfigError(f"Plaintext access.yml is forbidden in the repository: {path}")
+        result[variant.name] = variant
+    return result
+
+
+def copy_source_skill(
+    source: Path, destination: Path, profile: str | None = None
+) -> None:
+    variants = skill_profile_sources(source)
+    if profile is not None:
+        validate_safe_name(profile, "skill profile name")
     destination.mkdir(parents=True, exist_ok=True)
-    for path in iter_tree_files(source):
-        relative = path.relative_to(source)
-        if path.name == "access.yml" or path.suffix == ".age":
-            continue
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+    roots = [source]
+    if profile in variants:
+        roots.append(variants[profile])
+    for root in roots:
+        for path in iter_tree_files(root):
+            relative = path.relative_to(root)
+            if (
+                relative.parts[0].casefold() == "profiles"
+                or path.name == "access.yml"
+                or path.suffix == ".age"
+            ):
+                continue
+            target = destination / relative
+            ensure_no_links(target, destination)
+            if target.is_dir() or any(
+                parent.is_file() for parent in target.parents if parent != destination
+                and destination in parent.parents
+            ):
+                raise ConfigError(f"Skill profile has a file/directory conflict: {path}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
 
 
 def copy_installed_skill_for_capture(
     source: Path,
     destination: Path,
     secret_destination: str | None,
+    *,
+    source_skill: Path | None = None,
+    profile: str | None = None,
 ) -> None:
+    installed = {
+        path.relative_to(source): path for path in iter_tree_files(source)
+    }
+    if any(relative.parts[0].casefold() == "profiles" for relative in installed):
+        raise ConfigError(f"Installed skill contains reserved profile sources: {source}")
+    variants = skill_profile_sources(source_skill) if source_skill is not None else {}
+    if profile is not None:
+        validate_safe_name(profile, "skill profile name")
+    overlay = variants.get(profile)
+    overlay_files = {
+        path.relative_to(overlay) for path in iter_tree_files(overlay)
+    } if overlay is not None else set()
     destination.mkdir(parents=True, exist_ok=True)
-    for path in iter_tree_files(source):
-        relative = path.relative_to(source)
+    if source_skill is not None:
+        # Preserve every unselected variant, base files shadowed by the selected
+        # overlay, and source ciphertext. Rebuild ordinary common files below.
+        for path in iter_tree_files(source_skill):
+            relative = path.relative_to(source_skill)
+            in_variants = relative.parts[0].casefold() == "profiles"
+            in_selected = overlay is not None and path.is_relative_to(overlay)
+            if in_selected and path.suffix != ".age" and path.relative_to(overlay) not in installed:
+                if (source_skill / path.relative_to(overlay)).is_file():
+                    raise ConfigError(
+                        f"Cannot capture deletion of a profile override: {path.relative_to(overlay)}"
+                    )
+                continue
+            if not (in_variants or relative in overlay_files or path.suffix == ".age"):
+                continue
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+    for relative, path in installed.items():
         if path.suffix == ".age":
             continue
         if (
@@ -610,7 +685,10 @@ def copy_installed_skill_for_capture(
             and relative.as_posix() == Path(secret_destination).as_posix()
         ):
             continue
-        target = destination / relative
+        target = (
+            destination / "profiles" / profile / relative
+            if relative in overlay_files else destination / relative
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
 
@@ -1256,12 +1334,13 @@ def stage_skill(
     skill: str,
     staging_root: Path,
     session: PassphraseSession | None,
+    profile: str | None = None,
 ) -> Path:
     source = skill_source_path(repo_root, skill)
     if not source.is_dir() or is_link_like(source):
         raise ConfigError(f"Missing or unsafe source skill: {skill}")
     staged = staging_root / "desired" / skill
-    copy_source_skill(source, staged)
+    copy_source_skill(source, staged, profile)
     encrypted = encrypted_entry(manifest, skill)
     if encrypted is None:
         return staged
@@ -1279,12 +1358,13 @@ def stage_project_skill(
     repo_root: Path,
     skill: str,
     staging_root: Path,
+    profile: str | None = None,
 ) -> Path:
     source = skill_source_path(repo_root, skill, project_scoped=True)
     if not source.is_dir() or is_link_like(source):
         raise ConfigError(f"Missing or unsafe repository-scoped source skill: {skill}")
     staged = staging_root / "desired-project" / skill
-    copy_source_skill(source, staged)
+    copy_source_skill(source, staged, profile)
     return staged
 
 
@@ -1836,11 +1916,11 @@ def install_command(args: argparse.Namespace) -> None:
         session = PassphraseSession() if passphrase_names else None
         for skill in desired_names:
             desired_staged[skill] = stage_skill(
-                repo_root, manifest, skill, staging_root, session
+                repo_root, manifest, skill, staging_root, session, args.profile
             )
         for skill in desired_project_names:
             desired_project_staged[skill] = stage_project_skill(
-                repo_root, skill, staging_root
+                repo_root, skill, staging_root, args.profile
             )
 
         backups = staging_root / "backups"
@@ -2209,6 +2289,8 @@ def capture_command(args: argparse.Namespace) -> None:
                 installed_root,
                 staged,
                 encrypted["destination"] if encrypted is not None else None,
+                source_skill=skill_source_path(repo_root, skill),
+                profile=profile,
             )
             staged_skills[skill] = staged
             if encrypted:
@@ -2232,7 +2314,11 @@ def capture_command(args: argparse.Namespace) -> None:
                     f"Installed repository-scoped skill is missing or unsafe: {skill}"
                 )
             staged = staging_root / "captured-project" / skill
-            copy_installed_skill_for_capture(installed_root, staged, None)
+            copy_installed_skill_for_capture(
+                installed_root, staged, None,
+                source_skill=skill_source_path(repo_root, skill, project_scoped=True),
+                profile=profile,
+            )
             staged_project_skills[skill] = staged
     except Exception:
         if staging_root.exists():
@@ -2729,6 +2815,7 @@ def validate_source(repo_root: Path, manifest: dict[str, Any]) -> None:
             raise ConfigError(f"Missing or unsafe source skill: {skill}")
         if not (source / "SKILL.md").is_file():
             raise ConfigError(f"Skill has no SKILL.md: {skill}")
+        skill_profile_sources(source)
         if (source / "access.yml").exists():
             raise ConfigError(
                 f"Plaintext access.yml is forbidden in the repository: {skill}"
@@ -2742,6 +2829,7 @@ def validate_source(repo_root: Path, manifest: dict[str, Any]) -> None:
             )
         if not (source / "SKILL.md").is_file():
             raise ConfigError(f"Repository-scoped skill has no SKILL.md: {skill}")
+        skill_profile_sources(source)
         if (source / "access.yml").exists():
             raise ConfigError(
                 f"Plaintext access.yml is forbidden in repository-scoped skill: {skill}"

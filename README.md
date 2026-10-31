@@ -54,13 +54,19 @@ The canonical skill directory is `codex-skills/skills/<name>`, regardless
 of installation scope. Access bundles remain encrypted in its private Git
 history; they are decrypted only on an authorized user's machine.
 
-Both profiles install `access-mode` for shared SSH source selection. The default
-`agent` mode uses 1Password; the user can select `file` mode for unattended work.
-An explicit `access-personal` exception in agent mode lasts 60 minutes for one
-chat and resource. The SSH helper reads the current mode and checks expiry for
-each new connection. Changes apply to existing chats on their next connection;
-no hooks or background process are required. The task must still authorize the
-resource and action.
+Both profiles install one `access-personal` skill with shared scripts and the
+instructions selected for the installation profile. The `work` profile uses
+saved SSH credentials only. The `private` profile defaults to 1Password and
+supports a persistent `agent`/`file` selection; an explicit file exception in
+agent mode lasts 60 minutes for one chat and resource. The SSH helper checks
+the installed profile, current mode and expiry for each new connection.
+Existing connections continue unchanged. No hooks or background process are
+required; the task must still authorize the resource and action.
+
+Skills can provide profile overrides under `profiles/<profile>/`. Installation
+overlays those files onto the common skill and omits the source variants from
+the installed copy. Capture routes changes to selected overrides back to that
+variant while preserving the common files and other profiles.
 
 ## Prerequisites
 
