@@ -58,17 +58,18 @@ Both profiles install one `access-personal` skill with shared scripts and the
 instructions selected for the installation profile. The `work` profile uses
 saved SSH credentials only. The `private` profile defaults to 1Password and
 supports a persistent `agent`/`file` selection; an explicit file exception in
-agent mode lasts 60 minutes for one chat and resource. The SSH helper checks
-the installed profile, current mode and expiry for each new connection.
+agent mode lasts 60 minutes for one chat and resource. Before each new connection,
+a local source check resolves the installed profile, current mode and expiry.
 Existing connections continue unchanged. No hooks or background process are
 required; the task must still authorize the resource and action.
 
-SSH connections need only the resource ID. The helper reads its endpoint from
-the installed credentials. In agent mode, the matching SSH bookmark in
-1Password's generated `~/.ssh/1Password/config` selects the public key; item
-titles do not affect selection. File mode uses only the saved credential and
-does not query 1Password. Both modes require an already verified host key.
-Real endpoints, generated SSH config and credentials stay outside Git.
+In agent mode, use native SSH with the normal user configuration, including
+1Password's generated `~/.ssh/1Password/config`. Its SSH bookmark selects the
+public key. The source check does not read credentials, contact 1Password or
+launch SSH. The helper runs SSH only for file access, using the selected resource's
+saved credential and removing its temporary key afterward. Both routes require
+an already verified host key. Real endpoints, generated SSH config, local mode
+state and credentials stay outside Git.
 
 Skills can provide profile overrides under `profiles/<profile>/`. Installation
 overlays those files onto the common skill and omits the source variants from

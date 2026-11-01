@@ -10,7 +10,7 @@
 - Treat every repository as public, even if marked private.
 - Never commit secrets or private information in files or Git metadata. Use synthetic data and portable placeholders instead of personal, financial or infrastructure details.
 - Display secrets or private information only when the user explicitly requests those details.
-- For SSH, use the installed `access-personal` helper with the resource ID; change modes and grant file exceptions only at the user's explicit request.
+- Before SSH, check `access-personal` for the resource's source: native SSH with 1Password for `agent`, its helper for `file`. Change modes or grant file exceptions only at the user's explicit request.
 ## Files and tooling
 - Keep agent-only scratch files, downloads, one-off scripts, and logs in the project's `temp/`; add `temp/` to `.gitignore`.
 - Verify required tools before use.
