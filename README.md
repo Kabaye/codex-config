@@ -63,11 +63,12 @@ the installed profile, current mode and expiry for each new connection.
 Existing connections continue unchanged. No hooks or background process are
 required; the task must still authorize the resource and action.
 
-SSH resource bindings live outside Git in the local `access-personal` runtime.
-Bind a verified server endpoint, known-hosts file and public-key fingerprint once;
-subsequent connections need only the resource ID. Key labels and their language
-do not affect selection. Missing bindings or conflicting manual connection
-parameters stop before authentication. Real bindings never belong in this repo.
+SSH connections need only the resource ID. The helper reads its endpoint from
+the installed credentials. In agent mode, the matching SSH bookmark in
+1Password's generated `~/.ssh/1Password/config` selects the public key; item
+titles do not affect selection. File mode uses only the saved credential and
+does not query 1Password. Both modes require an already verified host key.
+Real endpoints, generated SSH config and credentials stay outside Git.
 
 Skills can provide profile overrides under `profiles/<profile>/`. Installation
 overlays those files onto the common skill and omits the source variants from
