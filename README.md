@@ -13,6 +13,8 @@ On work installations, the global path router selects `PRIVATE.md` only inside `
 
 The shared `bots/AGENTS.md` source is installed as `<projects-root>/AGENTS.md` and synchronized into bot repositories when working on Telegram bots. Other project instructions remain untouched.
 
+`CODEX_PROJECT_STYLE.md` is the retained optional reference for Codex project colors, icons, and workspace ordering. It is consulted when styling projects; installation does not apply it automatically.
+
 ## Skill installation and access
 
 `manifest.json` selects global and project-scoped skills per profile. Global skills go to `~/.agents/skills/<name>`; project-scoped skills go to `<project-root>/.agents/skills/<name>`. Skill sources are in the sibling private `codex-skills/skills/<name>` checkout. `profiles/<profile>/` overlays inside a skill source customize only the selected installation.
