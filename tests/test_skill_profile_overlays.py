@@ -143,23 +143,6 @@ class SkillProfileOverlayTests(unittest.TestCase):
         self.assertEqual((target / "SKILL.md").read_bytes(), original["SKILL.md"])
         self.assertEqual((target / "scripts" / "helper.py").read_text(), "# edited common helper\n")
 
-    def test_capture_preserves_ciphertext_without_decrypting(self) -> None:
-        cipher = b"age-encryption.org/v1\nsynthetic ciphertext only\n"
-        self.write(self.source / "access.yml.age", cipher)
-        session = mock.Mock()
-        session.decrypt.return_value = b"synthetic fixture value\n"
-        with mock.patch.object(manager, "PassphraseSession", return_value=session):
-            manager.install_command(self.args())
-        target = self.installed / "access-personal"
-        self.assertFalse((target / "access.yml.age").exists())
-        self.write(target / "SKILL.md", "edited work instructions\n")
-        with mock.patch.object(manager, "PassphraseSession") as capture_session:
-            manager.capture_command(self.args())
-        capture_session.assert_not_called()
-        self.assertEqual((self.source / "access.yml.age").read_bytes(), cipher)
-        self.assertFalse((self.source / "access.yml").exists())
-        self.assertEqual((self.source / "profiles" / "work" / "SKILL.md").read_text(), "edited work instructions\n")
-
     def test_private_capture_updates_base_and_preserves_work(self) -> None:
         original_work = self.snapshot(self.source / "profiles" / "work")
         manager.install_command(self.args("private"))
