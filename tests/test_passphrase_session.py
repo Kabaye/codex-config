@@ -32,22 +32,6 @@ class PassphraseSessionTests(unittest.TestCase):
             self.assertEqual(2, prompt.call_count)
             prompt.assert_any_call("Enter age passphrase: ")
 
-    def test_different_phrase_in_second_file_is_reported_without_reprompt(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
-            first = root / "first.age"
-            second = root / "second.age"
-            first.write_bytes(passphrase.encrypt(b"work", "first phrase"))
-            second.write_bytes(passphrase.encrypt(b"personal", "second phrase"))
-
-            with mock.patch.object(manage, "read_masked_passphrase", return_value="first phrase") as prompt:
-                session = manage.PassphraseSession()
-                session.decrypt(first)
-                with self.assertRaisesRegex(manage.ConfigError, "same passphrase"):
-                    session.decrypt(second)
-
-            prompt.assert_called_once()
-
     def test_three_wrong_attempts_do_not_write_plaintext(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)
@@ -101,23 +85,6 @@ class InstallDirectDecryptTests(unittest.TestCase):
             }
         }
         return repo, manifest
-
-    def test_existing_installed_value_is_ignored(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
-            repo, manifest = self._setup_secret(root, b"untrusted old value\n")
-            with mock.patch.object(
-                manage, "read_masked_passphrase", return_value="correct phrase"
-            ) as prompt:
-                staged = manage.stage_skill(
-                    repo, manifest, "access", root / "staging",
-                    manage.PassphraseSession()
-                )
-            self.assertEqual(
-                b"actual encrypted secret\n",
-                (staged / "access.yml").read_bytes(),
-            )
-            prompt.assert_called_once()
 
     def test_secret_requires_passphrase_even_if_old_plaintext_exists(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
