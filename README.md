@@ -15,6 +15,8 @@ For manual installation, open `profiles.private` or `profiles.work` in the manif
 
 On work installations, the global path router selects `PRIVATE.md` only inside `<projects-root>/private`, otherwise `WORK.md`. It reads the selected policy before **each request and delegation**. The Work installation's personal policy is independent of the separate Private installation.
 
+`WORK.md` and `PRIVATE.md` contain account/access policy. Delegation instructions belong to the global `codex-profiles` block in `AGENTS.md`: corporate routing is part of the Work profile in both modes, while Solo/Team controls native Codex delegation.
+
 The shared `bots/AGENTS.md` source is installed as `<projects-root>/AGENTS.md` and synchronized into bot repositories when working on Telegram bots. Other project instructions remain untouched.
 
 `CODEX_PROJECT_STYLE.md` is the retained optional reference for Codex project colors, icons, and workspace ordering. It is consulted when styling projects; installation does not apply it automatically.
