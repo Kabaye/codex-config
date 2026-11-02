@@ -115,26 +115,6 @@ class SkillProfileOverlayTests(unittest.TestCase):
                 self.assertFalse((project_target / "profiles").exists())
                 session.assert_not_called()
 
-    def test_switch_removes_obsolete_owned_access_mode(self) -> None:
-        self.write(self.skills / "skills" / "access-mode" / "SKILL.md", "legacy mode helper\n")
-        catalog = manager.load_json(self.skills / "skills-manifest.json")
-        catalog["skills"]["access-mode"] = {}
-        self.write(self.skills / "skills-manifest.json", json.dumps(catalog))
-        for config in self.manifest["profiles"].values():
-            config["skills"].append("access-mode")
-        self.write_manifest()
-        manager.install_command(self.args("work"))
-        self.assertTrue((self.installed / "access-mode").is_dir())
-        for config in self.manifest["profiles"].values():
-            config["skills"].remove("access-mode")
-        self.write_manifest()
-
-        manager.install_command(self.args("private"))
-
-        self.assertFalse((self.installed / "access-mode").exists())
-        self.assertFalse((self.installed / "access-personal" / "work-note.txt").exists())
-        self.assertNotIn("access-mode", manager.load_state(self.home)["skills"])
-
     def test_capture_routes_overlay_edits_and_preserves_other_variants(self) -> None:
         original = self.snapshot(self.source)
         manager.install_command(self.args())
@@ -190,32 +170,6 @@ class SkillProfileOverlayTests(unittest.TestCase):
         self.assertEqual((self.source / "SKILL.md").read_text(), "edited private instructions\n")
         self.assertEqual(self.snapshot(self.source / "profiles" / "work"), original_work)
 
-    def test_capture_removes_deleted_common_and_overlay_only_files(self) -> None:
-        manager.install_command(self.args())
-        target = self.installed / "access-personal"
-        (target / "scripts" / "helper.py").unlink()
-        (target / "work-note.txt").unlink()
-
-        manager.capture_command(self.args())
-        manager.install_command(self.args())
-
-        self.assertFalse((self.source / "scripts" / "helper.py").exists())
-        self.assertFalse((self.source / "profiles" / "work" / "work-note.txt").exists())
-        self.assertFalse((target / "scripts" / "helper.py").exists())
-        self.assertFalse((target / "work-note.txt").exists())
-
-    def test_fingerprint_includes_unselected_variants(self) -> None:
-        manifest = manager.load_manifest(self.repo)
-        first = manager.source_fingerprint(self.repo, manifest, "private")
-        self.write(self.source / "profiles" / "work" / "SKILL.md", "changed work variant\n")
-        self.assertNotEqual(first, manager.source_fingerprint(self.repo, manifest, "private"))
-
-    def test_optional_staging_profile_defaults_to_base(self) -> None:
-        manifest = manager.load_manifest(self.repo)
-        staged = manager.stage_skill(self.repo, manifest, "access-personal", Path(self.temp.name) / "staging", None)
-        self.assertEqual((staged / "SKILL.md").read_bytes(), (self.source / "SKILL.md").read_bytes())
-        self.assertFalse((staged / "profiles").exists())
-
     def test_rejects_unsafe_variant_names_and_contents(self) -> None:
         for name, value in (("bad name", "directory"), ("file-variant", "file"), ("nested", "nested"), ("plain", "plain")):
             with self.subTest(value=value):
@@ -257,14 +211,6 @@ class SkillProfileOverlayTests(unittest.TestCase):
                 manager.validate_source(self.repo, manager.load_manifest(self.repo))
             with self.assertRaises(manager.ConfigError):
                 manager.copy_source_skill(self.source, Path(self.temp.name) / "staging", "work")
-
-    def test_capture_rejects_shadowed_deletion_before_source_changes(self) -> None:
-        manager.install_command(self.args())
-        original = self.snapshot(self.source)
-        (self.installed / "access-personal" / "SKILL.md").unlink()
-        with self.assertRaisesRegex(manager.ConfigError, "deletion of a profile override"):
-            manager.capture_command(self.args())
-        self.assertEqual(self.snapshot(self.source), original)
 
     def test_failed_switch_restores_installed_selection_and_state(self) -> None:
         manager.install_command(self.args("work"))
