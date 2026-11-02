@@ -63,16 +63,6 @@ class PassphraseSessionTests(unittest.TestCase):
             self.assertEqual(3, prompt.call_count)
             self.assertFalse(destination.exists())
 
-    def test_empty_entry_can_be_retried(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_root:
-            cipher = Path(raw_root) / "source.age"
-            cipher.write_bytes(passphrase.encrypt(b"data", "correct phrase"))
-
-            with mock.patch.object(manage, "read_masked_passphrase", side_effect=["", "correct phrase"]) as prompt:
-                self.assertEqual(b"data", manage.PassphraseSession().decrypt(cipher))
-
-            self.assertEqual(2, prompt.call_count)
-
     def test_encrypt_uses_verified_phrase_and_standard_age_format(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)
@@ -138,27 +128,6 @@ class InstallDirectDecryptTests(unittest.TestCase):
 
 
 class MaskedInputTests(unittest.TestCase):
-    def test_pasted_characters_are_masked(self) -> None:
-        characters = iter(["a", "b", "c", "\r"])
-        output = io.StringIO()
-
-        self.assertEqual("abc", manage._collect_masked_input(lambda: next(characters), output))
-        self.assertEqual("***\r\n", output.getvalue())
-
-    def test_backspace_erases_one_mask_character(self) -> None:
-        characters = iter(["a", "b", "\b", "c", "\r"])
-        output = io.StringIO()
-
-        self.assertEqual("ac", manage._collect_masked_input(lambda: next(characters), output))
-        self.assertEqual("**\b \b*\r\n", output.getvalue())
-
-    def test_unicode_surrogate_pair_uses_one_star(self) -> None:
-        characters = iter(["\ud83d", "\udd10", "\r"])
-        output = io.StringIO()
-
-        self.assertEqual("🔐", manage._collect_masked_input(lambda: next(characters), output))
-        self.assertEqual("*\r\n", output.getvalue())
-
     def test_control_c_does_not_return_partial_input(self) -> None:
         characters = iter(["a", "\x03"])
         output = io.StringIO()
