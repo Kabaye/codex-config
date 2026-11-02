@@ -1,5 +1,8 @@
 {
   "schema_version": 1,
+  "agent_roles": {
+    "codex-config/terra-computer.toml": "agents/terra-computer.toml"
+  },
   "markers": {
     "global_begin": "<!-- codex-config:begin -->",
     "global_end": "<!-- codex-config:end -->",
@@ -34,12 +37,6 @@
         "codex-update",
         "connect-vpn",
         "keep-awake"
-      ],
-      "work_fragments": [
-        "profiles/work/WORK.md"
-      ],
-      "private_fragments": [
-        "profiles/work/PRIVATE.md"
       ]
     },
     "private": {
@@ -62,27 +59,13 @@
       ],
       "project_skills": [
         "claude-review"
-      ],
-      "work_fragments": [],
-      "private_fragments": []
+      ]
     }
   },
   "instruction_targets": {
     "global": {
       "root": "home",
       "path": "AGENTS.md",
-      "begin": "global_begin",
-      "end": "global_end"
-    },
-    "work": {
-      "root": "home",
-      "path": "WORK.md",
-      "begin": "global_begin",
-      "end": "global_end"
-    },
-    "private": {
-      "root": "home",
-      "path": "PRIVATE.md",
       "begin": "global_begin",
       "end": "global_end"
     },

@@ -1,6 +1,3 @@
-## Policy before work
-- At the start of every user request, before any task action or delegation, load the applicable runtime policy. The only tool calls allowed before loading it are those needed to identify the target repository and read that policy.
-- If the required policy is missing or unreadable, stop and report instead of proceeding without it. In the `private` profile, the personal policy is already inline in this `AGENTS.md`.
 ## Git and workspace
 - **Before every task in a Git repository with a remote, run `git fetch`.**
 - Create worktrees only when the user explicitly requests one.
@@ -11,6 +8,10 @@
 - Never commit secrets or private information in files or Git metadata. Use synthetic data and portable placeholders instead of personal, financial or infrastructure details.
 - Display secrets or private information only when the user explicitly requests those details.
 - Before SSH, check `access-personal` for the resource's source: native SSH with 1Password for `agent`, its helper for `file`. Change modes or grant file exceptions only at the user's explicit request.
+## Browser and Computer Use
+- Use Opera through the Browser extension for browser tasks. Handle straightforward browser workflows directly.
+- Use desktop Computer Use only when the user explicitly requests it or approves it for the task. Delegate authorized desktop GUI work to `terra_computer` and verify the visible result. Report unavailable model, tools or permissions.
+- Use the in-app browser only for a target tab opened by the user.
 ## Files and tooling
 - Keep agent-only scratch files, downloads, one-off scripts, and logs in the project's `temp/`; add `temp/` to `.gitignore`.
 - Verify required tools before use.

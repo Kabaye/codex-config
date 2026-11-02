@@ -25,23 +25,29 @@ class CompactAgentInstructionsTests(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, text)
 
-    def test_only_work_layout_uses_path_routing(self):
+    def test_only_work_inline_policy_uses_path_conditions(self):
         shared = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         router = (ROOT / "profiles/work/AGENTS.md").read_text(encoding="utf-8")
         self.assertNotIn("Runtime account policy", shared)
         self.assertNotIn("{{PRIVATE_ROOT}}", shared)
-        for rule in ("`WORK.md` and `PRIVATE.md`", "path component", "{{PRIVATE_ROOT}}", "git rev-parse --show-toplevel"):
+        self.assertNotIn("Policy before work", shared)
+        for rule in ("path component", "{{PRIVATE_ROOT}}", "git rev-parse --show-toplevel"):
             self.assertIn(rule, router)
+        for obsolete in ("WORK.md", "PRIVATE.md", "standalone tool call", "read the selected policy"):
+            self.assertNotIn(obsolete, router)
 
-    def test_account_rules_are_split_into_sidecar_sources(self):
-        work = (ROOT / "profiles/work/WORK.md").read_text(encoding="utf-8")
-        private = (ROOT / "profiles/work/PRIVATE.md").read_text(encoding="utf-8")
+    def test_account_rules_are_inline_and_keep_work_personal_access_distinct(self):
+        work = (ROOT / "profiles/work/AGENTS.md").read_text(encoding="utf-8")
         inline_private = (ROOT / "profiles/private/AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("corporate Git identity", work)
-        self.assertNotIn("personal", work.lower())
-        self.assertNotIn("private", work.lower())
-        self.assertIn("personal accounts", private)
-        self.assertIn("personal Git identity", private)
+        self.assertIn("personal accounts", work)
+        self.assertIn("personal Git identity", work)
+        self.assertIn("installed `access-personal` access file", work)
+        self.assertIn("file helper for SSH", work)
+        self.assertIn("Webex CLI", work)
+        self.assertIn("send messages only when explicitly requested", work)
+        self.assertFalse((ROOT / "profiles/work/WORK.md").exists())
+        self.assertFalse((ROOT / "profiles/work/PRIVATE.md").exists())
         self.assertIn("personal Git identity", inline_private)
 
     def test_bot_release_and_keyboard_safety(self):

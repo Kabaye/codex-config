@@ -1,2 +1,0 @@
-- Use personal accounts only for explicitly authorized tasks. Get credentials only from the installed `access-personal` access file and use its file helper for SSH.
-- Use the personal Git identity in personal repositories.

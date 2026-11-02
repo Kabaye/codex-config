@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import errno
+from functools import wraps
 import getpass
 import hashlib
 import json
@@ -14,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 import uuid
 from pathlib import Path
 from typing import Any, Callable, TextIO
@@ -175,6 +177,253 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     )
 
 
+def validate_role_name(value: Any, *, allow_flat: bool = True, namespace: str | None = "codex-config") -> str:
+    """Validate canonical POSIX destinations; flat names are migration-only."""
+    if not isinstance(value, str) or "\\" in value:
+        raise ConfigError(f"Invalid agent role path: {value!r}")
+    parts = value.split("/")
+    for part in parts:
+        validate_safe_name(part, "agent role path component")
+    if Path(parts[-1]).suffix != ".toml":
+        raise ConfigError(f"Agent role path must end in .toml: {value}")
+    if len(parts) == 1:
+        if not allow_flat:
+            raise ConfigError("Agent role destinations must use the codex-config namespace")
+    elif namespace is not None and parts[0] != namespace:
+        raise ConfigError(f"Agent role path belongs to another manager: {value}")
+    return value
+
+
+def role_state_path(home: Path) -> Path:
+    return home / "codex-config" / "roles-state.json"
+
+
+def role_file_bytes(path: Path, home: Path) -> bytes | None:
+    ensure_no_links(path, home)
+    if path.exists() and not path.is_file():
+        raise ConfigError(f"Agent role path must be a regular file: {path}")
+    return path.read_bytes() if path.exists() else None
+
+
+def validate_role_locations(home: Path) -> None:
+    for path in (home / "agents", home / "codex-config", home / ".agent-roles.lock"):
+        ensure_no_links(path, home)
+        if path.exists() and not path.is_dir():
+            raise ConfigError(f"Agent role directory is not a directory: {path}")
+    role_file_bytes(role_state_path(home), home)
+
+
+class AgentRolesLock:
+    """Coordinate role publication and rollback with other Codex-home managers."""
+
+    def __init__(self, home: Path) -> None:
+        self.home = home
+        self.path = home / ".agent-roles.lock"
+        self.created_home = False
+
+    def __enter__(self) -> "AgentRolesLock":
+        validate_role_locations(self.home)
+        self.created_home = not self.home.exists()
+        self.home.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.mkdir()
+        except FileExistsError as exc:
+            raise ConfigError("Another agent role operation may be active; review .agent-roles.lock") from exc
+        return self
+
+    def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
+        self.path.rmdir()
+        if self.created_home:
+            try:
+                self.home.rmdir()
+            except OSError:
+                pass
+
+
+def role_operation(command: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(command)
+    def run(args: argparse.Namespace) -> Any:
+        if args.dry_run:
+            home = args.home.expanduser().absolute()
+            validate_role_locations(home)
+            if (home / ".agent-roles.lock").exists():
+                raise ConfigError("Another agent role operation may be active; review .agent-roles.lock")
+            return command(args)
+        with AgentRolesLock(args.home.expanduser().absolute()):
+            return command(args)
+    return run
+
+
+def desired_agent_roles(repo_root: Path, manifest: dict[str, Any]) -> dict[str, bytes]:
+    desired = {}
+    for name, source in manifest.get("agent_roles", {}).items():
+        validate_role_name(name, allow_flat=False)
+        path = relative_path(repo_root, source)
+        ensure_no_links(path, repo_root)
+        if not path.is_file():
+            raise ConfigError(f"Missing or unsafe agent role source: {source}")
+        raw = canonical_text(read_text(path)).encode("utf-8")
+        try:
+            definition = tomllib.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError) as exc:
+            raise ConfigError(f"Invalid agent role TOML: {source}") from exc
+        for key in ("name", "description", "model", "model_reasoning_effort", "developer_instructions"):
+            if not isinstance(definition.get(key), str) or not definition[key].strip():
+                raise ConfigError(f"Agent role source is missing {key}: {source}")
+        desired[name] = raw
+    return desired
+
+
+def load_role_state(home: Path) -> dict[str, Any] | None:
+    raw = role_file_bytes(role_state_path(home), home)
+    if raw is None:
+        return None
+    state = json.loads(raw.decode("utf-8"))
+    if (not isinstance(state, dict) or set(state) != {"version", "owned"}
+            or type(state.get("version")) is not int or state["version"] != 1
+            or not isinstance(state.get("owned"), dict)):
+        raise ConfigError("Invalid codex-config role ownership state")
+    for name, digest in state["owned"].items():
+        validate_role_name(name)
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            raise ConfigError("Invalid codex-config role ownership hash")
+    if len({name.casefold() for name in state["owned"]}) != len(state["owned"]):
+        raise ConfigError("Duplicate codex-config role ownership filename")
+    return state
+
+
+def legacy_profile_role_ownership(home: Path) -> tuple[dict[str, str], dict[Path, bytes | None]]:
+    path = home / "profiles" / "roles-state.json"
+    raw = role_file_bytes(path, home)
+    if raw is None:
+        return {}, {path: None}
+    state = json.loads(raw.decode("utf-8"))
+    if (not isinstance(state, dict) or type(state.get("version")) is not int
+            or state["version"] not in {1, 2, 3} or not isinstance(state.get("profile"), str)
+            or not isinstance(state.get("owned"), dict)):
+        raise ConfigError("Invalid legacy profiles role ownership state")
+    for name, digest in state["owned"].items():
+        validate_role_name(name, namespace=None)
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            raise ConfigError("Invalid legacy profiles role ownership hash")
+    return (state["owned"] if state["version"] in {1, 2} else {}), {path: raw}
+
+
+def plan_agent_roles(
+    repo_root: Path, manifest: dict[str, Any], home: Path, *, remove: bool = False,
+) -> dict[str, Any]:
+    validate_role_locations(home)
+    desired = {} if remove else desired_agent_roles(repo_root, manifest)
+    state = load_role_state(home)
+    owned = (state or {}).get("owned", {})
+    old: dict[Path, bytes | None] = {}
+    target: dict[Path, bytes | None] = {}
+    proof: dict[Path, bytes | None] = {}
+    legacy_owned = None
+    for name in sorted(set(owned) | set(desired)):
+        path = home / "agents" / name
+        raw = role_file_bytes(path, home)
+        old[path] = raw
+        if name in owned:
+            if raw is None or sha256_bytes(raw) != owned[name]:
+                raise ConfigError(f"Managed agent role changed or missing; review it before proceeding: {name}")
+        elif raw is not None:
+            try:
+                identical = canonical_text(raw.decode("utf-8-sig")).encode("utf-8") == desired[name]
+            except UnicodeError:
+                identical = False
+            if not identical:
+                raise ConfigError(f"Unowned agent role collision: {name}")
+        target[path] = desired.get(name)
+    # Older managers installed these leaf filenames directly under agents/.
+    # Publish the namespaced destination before retiring an authenticated flat copy.
+    for name, desired_raw in desired.items():
+        flat_name = Path(name).name
+        flat_path = home / "agents" / flat_name
+        raw = role_file_bytes(flat_path, home)
+        if raw is None or flat_path in old:
+            continue
+        try:
+            identical = canonical_text(raw.decode("utf-8-sig")).encode("utf-8") == desired_raw
+        except UnicodeError:
+            identical = False
+        if not identical:
+            if legacy_owned is None:
+                legacy_owned, proof = legacy_profile_role_ownership(home)
+            if legacy_owned.get(flat_name) != sha256_bytes(raw):
+                raise ConfigError(f"Unowned legacy flat agent role collision: {flat_name}")
+        old[flat_path], target[flat_path] = raw, None
+    path = role_state_path(home)
+    old[path] = role_file_bytes(path, home)
+    target[path] = ((json.dumps({"version": 1, "owned": {
+        name: sha256_bytes(raw) for name, raw in sorted(desired.items())
+    }}, indent=2) + "\n").encode("utf-8") if desired else None)
+    return {"old": old, "target": target, "proof": proof,
+            "changed": [path for path in target if old[path] != target[path]]}
+
+
+def check_agent_role_plan(plan: dict[str, Any], home: Path) -> None:
+    for path, raw in {**plan["old"], **plan["proof"]}.items():
+        if role_file_bytes(path, home) != raw:
+            raise ConfigError("Agent role or ownership state changed during preflight; retry")
+
+
+def backup_agent_roles(plan: dict[str, Any], transaction: Path, home: Path) -> dict[str, Any]:
+    check_agent_role_plan(plan, home)
+    names = {}
+    for path in plan["old"]:
+        if path == role_state_path(home):
+            continue
+        name = path.relative_to(home / "agents").as_posix()
+        names[name] = backup_optional_file(path, transaction / "backups" / "role-files" / name)
+    existed = backup_optional_file(role_state_path(home), transaction / "backups" / "roles-state.json")
+    return {"role_files": names, "roles_state_existed": existed}
+
+
+def apply_agent_role_plan(plan: dict[str, Any], home: Path) -> None:
+    check_agent_role_plan(plan, home)
+    state_path = role_state_path(home)
+    writes = [path for path in plan["changed"] if path != state_path and plan["target"][path] is not None]
+    removals = [path for path in plan["changed"] if path != state_path and plan["target"][path] is None]
+    for path in [*writes, *removals, *([state_path] if state_path in plan["changed"] else [])]:
+        raw = plan["target"][path]
+        if raw is None:
+            path.unlink(missing_ok=True)
+        else:
+            atomic_write_bytes(path, raw)
+
+
+def restore_agent_roles(journal: dict[str, Any], transaction: Path, home: Path) -> None:
+    if "role_files" not in journal:
+        return  # Transactions written before role ownership existed.
+    roles = journal["role_files"]
+    if not isinstance(roles, dict) or not isinstance(journal.get("roles_state_existed"), bool):
+        raise ConfigError("Interrupted transaction has invalid role ownership backup")
+    validate_role_locations(home)
+    for name, existed in roles.items():
+        validate_role_name(name)
+        if not isinstance(existed, bool):
+            raise ConfigError("Interrupted transaction has invalid role file backup")
+        backup = transaction / "backups" / "role-files" / name
+        ensure_no_links(backup, transaction)
+        restore_optional_file(home / "agents" / name, backup, existed)
+    backup = transaction / "backups" / "roles-state.json"
+    ensure_no_links(backup, transaction)
+    restore_optional_file(role_state_path(home), backup, journal["roles_state_existed"])
+
+
+def agent_roles_status(repo_root: Path, manifest: dict[str, Any], home: Path) -> tuple[dict[str, bool], bool]:
+    desired = desired_agent_roles(repo_root, manifest)
+    state = load_role_state(home)
+    owned = (state or {}).get("owned", {})
+    roles = {}
+    for name in set(owned) | set(desired):
+        raw = role_file_bytes(home / "agents" / name, home)
+        roles[name] = (raw is not None and name in desired and raw == desired[name]
+                       and owned.get(name) == sha256_bytes(raw))
+    return roles, state is not None
+
+
 def load_manifest(
     repo_root: Path, *, base_only: bool = False
 ) -> dict[str, Any]:
@@ -185,6 +434,19 @@ def load_manifest(
         raise ConfigError("Manifest profiles are missing")
     if not isinstance(manifest.get("markers"), dict):
         raise ConfigError("Manifest markers are missing")
+    roles = manifest.get("agent_roles", {})
+    if not isinstance(roles, dict):
+        raise ConfigError("Manifest agent_roles must map destination filenames to sources")
+    destinations: set[str] = set()
+    for name, source in roles.items():
+        validate_role_name(name, allow_flat=False)
+        validate_relative_value(source, "agent role source")
+        if Path(source).suffix != ".toml":
+            raise ConfigError(f"Agent role source must be TOML: {source}")
+        if name.casefold() in destinations:
+            raise ConfigError("Duplicate agent role destination")
+        destinations.add(name.casefold())
+    manifest["agent_roles"] = roles
     required_markers = {"global_begin", "global_end", "projects_begin", "projects_end"}
     optional_markers = {"work_begin", "work_end", "private_begin", "private_end"}
     if not required_markers.issubset(manifest["markers"]) or set(manifest["markers"]) - (required_markers | optional_markers):
@@ -216,7 +478,8 @@ def load_manifest(
                 validate_relative_value(value, f"instructions.{group} entry")
     targets = manifest.get("instruction_targets")
     if targets is not None:
-        if not isinstance(targets, dict) or set(targets) != {"global", "work", "private", "projects"}:
+        if (not isinstance(targets, dict) or not {"global", "projects"}.issubset(targets)
+                or set(targets) - {"global", "work", "private", "projects"}):
             raise ConfigError("Manifest instruction_targets are invalid")
         destinations = set()
         for name, target in targets.items():
@@ -238,7 +501,8 @@ def load_manifest(
             "private": ("home", "PRIVATE.md", "global_begin", "global_end"),
             "projects": ("projects", "AGENTS.md", "projects_begin", "projects_end"),
         }
-        for name, expected in expected_targets.items():
+        for name in targets:
+            expected = expected_targets[name]
             if tuple(targets[name][key] for key in ("root", "path", "begin", "end")) != expected:
                 raise ConfigError(f"Instruction target {name} must use its native runtime destination")
     for name, config in manifest["profiles"].items():
@@ -276,6 +540,10 @@ def load_manifest(
             raise ConfigError(
                 f"Profile {name} has skills in both scopes: {', '.join(sorted(overlap))}"
             )
+        if targets is not None:
+            for group, sources in instruction_layout(manifest, name).items():
+                if sources and group.removesuffix("_fragments") not in targets:
+                    raise ConfigError(f"Profile {name} declares instruction sources without a runtime target: {group}")
     # Access metadata is discovered from private skill sources at runtime.
     # No plaintext hashes, private metadata file, or local-secret reuse are used.
     manifest["encrypted_files"] = {}
@@ -946,7 +1214,17 @@ def recover_transactions(
     projects_root: Path,
     repo_root: Path,
     project_root: Path,
+    *,
+    roles_locked: bool = False,
 ) -> None:
+    if not roles_locked:
+        for transaction in sorted(manager_root.glob("txn-*")):
+            ensure_no_links(transaction / "journal.json", manager_root)
+            journal_path = transaction / "journal.json"
+            if journal_path.is_file() and "role_files" in load_json(journal_path):
+                with AgentRolesLock(home):
+                    recover_transactions(manager_root, home, projects_root, repo_root, project_root, roles_locked=True)
+                return
     for transaction in sorted(manager_root.glob("txn-*")):
         require_within(transaction, manager_root)
         if is_link_like(transaction) or not transaction.is_dir():
@@ -1179,6 +1457,9 @@ def recover_transactions(
                     project_source_root,
                     project_skills,
                 )
+        elif operation == "sync-roles":
+            if skills or project_skills or "role_files" not in journal:
+                raise ConfigError("Interrupted role sync has invalid transaction state")
         elif operation == "sync-instructions":
             if not isinstance(skills, dict) or skills or not isinstance(project_skills, dict) or project_skills:
                 raise ConfigError("Interrupted instruction sync has invalid skill state")
@@ -1208,6 +1489,7 @@ def recover_transactions(
             raise ConfigError(
                 f"Interrupted transaction has invalid operation: {operation!r}"
             )
+        restore_agent_roles(journal, transaction, home)
         # Cleanup may remove only part of a retained copy before failing. Once
         # every target is restored, retries must never use those backups again.
         journal["phase"] = "recovered"
@@ -1458,8 +1740,6 @@ def validate_target_locations(
 ) -> None:
     for path in (
         home / "AGENTS.md",
-        home / "WORK.md",
-        home / "PRIVATE.md",
         home / "codex-config",
     ):
         ensure_no_links(path, home)
@@ -1681,7 +1961,17 @@ def managed_instruction_text(
     return build_global_text(current, desired, legacy, begin, end, force)
 
 
-def instruction_targets(home: Path, projects_root: Path, manifest: dict[str, Any] | None = None) -> dict[str, tuple[Path, str, str]]:
+def instruction_targets(
+    home: Path, projects_root: Path, manifest: dict[str, Any] | None = None,
+    installed_hashes: dict[str, str] | None = None,
+) -> dict[str, tuple[Path, str, str]]:
+    # Old sidecar names remain only to retire blocks with recorded ownership.
+    legacy = {
+        "global": (home / "AGENTS.md", "global_begin", "global_end"),
+        "work": (home / "WORK.md", "global_begin", "global_end"),
+        "private": (home / "PRIVATE.md", "global_begin", "global_end"),
+        "projects": (projects_root / "AGENTS.md", "projects_begin", "projects_end"),
+    }
     configured = (manifest or {}).get("instruction_targets")
     if configured is not None:
         roots = {"home": home, "projects": projects_root}
@@ -1691,14 +1981,13 @@ def instruction_targets(home: Path, projects_root: Path, manifest: dict[str, Any
             path = relative_path(root, target["path"])
             ensure_no_links(path, root)
             result[name] = (path, target["begin"], target["end"])
+        for name in (installed_hashes or {}):
+            if name in {"work", "private"} and name not in result:
+                ensure_no_links(legacy[name][0], home)
+                result[name] = legacy[name]
         return result
     # Historical manifests used these fixed runtime names.
-    return {
-        "global": (home / "AGENTS.md", "global_begin", "global_end"),
-        "work": (home / "WORK.md", "global_begin", "global_end"),
-        "private": (home / "PRIVATE.md", "global_begin", "global_end"),
-        "projects": (projects_root / "AGENTS.md", "projects_begin", "projects_end"),
-    }
+    return legacy
 
 
 def instruction_path_replacements(private_root: Path) -> dict[str, str]:
@@ -1826,6 +2115,54 @@ def check_target_unchanged(
         )
 
 
+def run_role_transaction(args: argparse.Namespace, plan: dict[str, Any]) -> None:
+    if not plan["changed"]:
+        return
+    repo_root, home = args.repo.resolve(), args.home.resolve()
+    projects_root = args.projects_root.resolve()
+    project_root = resolve_project_root(args, repo_root)
+    manager_root = home / "codex-config"
+    restrict_private_directory(manager_root)
+    transaction = manager_root / f"txn-sync-roles-{uuid.uuid4().hex}"
+    restrict_private_directory(transaction)
+    journal_written = False
+    success = False
+    try:
+        role_backups = backup_agent_roles(plan, transaction, home)
+        write_json(transaction / "journal.json", {
+            "schema_version": 1, "phase": "prepared", "operation": "sync-roles",
+            "repo_root": str(repo_root), "home": str(home),
+            "projects_root": str(projects_root), "project_root": str(project_root),
+            "skills": {}, "project_skills": {}, **role_backups,
+        })
+        journal_written = True
+        apply_agent_role_plan(plan, home)
+        mark_transaction_committed(transaction)
+        success = True
+    except Exception:
+        if journal_written:
+            recover_transactions(manager_root, home, projects_root, repo_root, project_root, roles_locked=True)
+        raise
+    finally:
+        if transaction.exists() and (success or not journal_written):
+            shutil.rmtree(transaction)
+
+
+@role_operation
+def sync_roles_command(args: argparse.Namespace) -> None:
+    """Publish only manifest-declared role files and their ownership state."""
+    repo_root, home = args.repo.resolve(), args.home.resolve()
+    manifest = load_manifest(repo_root, base_only=True)
+    plan = plan_agent_roles(repo_root, manifest, home)
+    if not args.dry_run:
+        run_role_transaction(args, plan)
+    print(json.dumps({"action": "sync-roles", "dry_run": args.dry_run,
+                      "files_changed": [path.relative_to(home).as_posix() for path in plan["changed"]],
+                      "skills_touched": False, "config_touched": False,
+                      "instructions_touched": False, "auth_touched": False}, indent=2))
+
+
+@role_operation
 def install_command(args: argparse.Namespace) -> None:
     repo_root = args.repo.resolve()
     if not args.dry_run:
@@ -1843,6 +2180,7 @@ def install_command(args: argparse.Namespace) -> None:
     )
     config = profile_config(manifest, args.profile)
     previous = load_install_state(home)
+    role_plan = plan_agent_roles(repo_root, manifest, home)
     previous_profile = previous.get("profile") if previous else None
     previous_skills_root = state_skills_root(previous, home, skills_root)
     previous_project_skills_root = state_project_skills_root(
@@ -1852,7 +2190,7 @@ def install_command(args: argparse.Namespace) -> None:
     markers = manifest["markers"]
     private_root = projects_root / "private"
     instruction_blocks = render_instruction_blocks(repo_root, manifest, private_root, args.profile)
-    targets = instruction_targets(home, projects_root, manifest)
+    targets = instruction_targets(home, projects_root, manifest, (previous or {}).get("instruction_block_sha256", {}))
     owned_instruction_hashes = (previous or {}).get("instruction_block_sha256", {})
     if previous and not owned_instruction_hashes:
         owned_instruction_hashes = {
@@ -1915,6 +2253,7 @@ def install_command(args: argparse.Namespace) -> None:
                     "action": "install",
                     "profile": args.profile,
                     "previous_profile": previous_profile,
+                    "agent_roles_changed": [path.relative_to(home).as_posix() for path in role_plan["changed"]],
                     "global_agents_changed": canonical_text(current_global)
                     != canonical_text(new_global),
                     "projects_agents_changed": canonical_text(current_projects)
@@ -1945,7 +2284,7 @@ def install_command(args: argparse.Namespace) -> None:
 
     manager_root = home / "codex-config"
     if not args.dry_run:
-        recover_transactions(manager_root, home, projects_root, repo_root, project_root)
+        recover_transactions(manager_root, home, projects_root, repo_root, project_root, roles_locked=True)
     restrict_private_directory(manager_root)
     staging_root = manager_root / f"txn-install-{uuid.uuid4().hex}"
     restrict_private_directory(staging_root)
@@ -1979,6 +2318,7 @@ def install_command(args: argparse.Namespace) -> None:
                 path, backups / f"{name}-agents.bin"
             )
         state_existed = backup_optional_file(state_path(home), backups / "state.json")
+        role_backups = backup_agent_roles(role_plan, staging_root, home)
         skill_existence = {
             skill: (skills_root / skill).exists()
             for skill in replacement_names
@@ -2031,6 +2371,7 @@ def install_command(args: argparse.Namespace) -> None:
                     if name not in {"global", "projects"}
                 },
                 "state_existed": state_existed,
+                **role_backups,
                 "skills_root": str(skills_root),
                 "skills": skill_existence,
                 "legacy_skills_root": (
@@ -2129,13 +2470,14 @@ def install_command(args: argparse.Namespace) -> None:
                 for name in desired_project_names
             },
         }
+        apply_agent_role_plan(role_plan, home)
         write_json(state_path(home), state)
         mark_transaction_committed(staging_root)
         success = True
     except Exception:
         if journal_written:
             recover_transactions(
-                manager_root, home, projects_root, repo_root, project_root
+                manager_root, home, projects_root, repo_root, project_root, roles_locked=True
             )
         raise
     finally:
@@ -2152,16 +2494,21 @@ def status_command(args: argparse.Namespace) -> None:
     skills_root = args.skills_root.resolve()
     project_root = resolve_project_root(args, repo_root)
     project_skills_root = project_root / ".agents" / "skills"
-    manifest = load_manifest(repo_root)
-    validate_source(repo_root, manifest)
+    manifest = load_manifest(repo_root, base_only=True)
     validate_target_locations(
         home, projects_root, skills_root, project_root
     )
     state = load_state(home)
+    roles, roles_managed = agent_roles_status(repo_root, manifest, home)
     if not state:
-        result: dict[str, Any] = {"installed": False}
+        result: dict[str, Any] = {"installed": False, "roles_managed": roles_managed,
+                                  "agent_roles": roles, "healthy": roles_managed and all(roles.values())}
         print(json.dumps(result, indent=2))
-        raise SystemExit(1)
+        if not result["healthy"]:
+            raise SystemExit(1)
+        return
+    manifest = load_manifest(repo_root)
+    validate_source(repo_root, manifest)
     profile = state["profile"]
     installed_skills_root = state_skills_root(state, home, skills_root)
     installed_project_skills_root = state_project_skills_root(
@@ -2207,11 +2554,13 @@ def status_command(args: argparse.Namespace) -> None:
                 markers[begin_key],
                 markers[end_key],
             ) == instruction_hashes.get(name)
-            for name, (path, begin_key, end_key) in instruction_targets(home, projects_root, manifest).items()
+            for name, (path, begin_key, end_key) in instruction_targets(home, projects_root, manifest, instruction_hashes).items()
             if name in instruction_hashes
         },
         "skills": skills,
         "project_skills": project_skills,
+        "roles_managed": roles_managed,
+        "agent_roles": roles,
     }
     result["healthy"] = all(
         [
@@ -2223,6 +2572,7 @@ def status_command(args: argparse.Namespace) -> None:
             result["project_skills_location_current"],
             all(skills.values()),
             all(project_skills.values()),
+            all(roles.values()),
         ]
     )
     print(json.dumps(result, indent=2))
@@ -2253,7 +2603,7 @@ def capture_command(args: argparse.Namespace) -> None:
     )
     config = profile_config(manifest, profile)
     markers = manifest["markers"]
-    targets = instruction_targets(home, projects_root, manifest)
+    targets = instruction_targets(home, projects_root, manifest, state.get("instruction_block_sha256", {}))
     layout = instruction_layout(manifest, profile)
     captured_fragments: dict[str, str] = {}
     located_blocks: dict[str, tuple[int, int, str]] = {}
@@ -2488,6 +2838,7 @@ def remove_block(text: str, begin: str, end: str) -> str:
     return join_sections(text[:start], text[stop:])
 
 
+@role_operation
 def remove_command(args: argparse.Namespace) -> None:
     repo_root = args.repo.resolve()
     home = args.home.resolve()
@@ -2495,12 +2846,20 @@ def remove_command(args: argparse.Namespace) -> None:
     skills_root = args.skills_root.resolve()
     project_root = resolve_project_root(args, repo_root)
     project_skills_root = project_root / ".agents" / "skills"
-    manifest = load_manifest(repo_root)
+    manifest = load_manifest(repo_root, base_only=True)
     validate_target_locations(
         home, projects_root, skills_root, project_root
     )
     state = load_state(home)
+    role_plan = plan_agent_roles(repo_root, manifest, home, remove=True)
     if not state:
+        if role_plan["changed"]:
+            if not args.dry_run:
+                run_role_transaction(args, role_plan)
+            print(json.dumps({"action": "remove", "agent_roles_changed": [
+                path.relative_to(home).as_posix() for path in role_plan["changed"]
+            ], "dry_run": args.dry_run}, indent=2))
+            return
         print("codex-config is not installed")
         return
     installed_skills_root = state_skills_root(state, home, skills_root)
@@ -2510,7 +2869,7 @@ def remove_command(args: argparse.Namespace) -> None:
     markers = manifest["markers"]
     global_path = home / "AGENTS.md"
     projects_path = projects_root / "AGENTS.md"
-    targets = instruction_targets(home, projects_root, manifest)
+    targets = instruction_targets(home, projects_root, manifest, state.get("instruction_block_sha256", {}))
     instruction_hashes = state.get("instruction_block_sha256", {})
     if not args.force:
         if current_block_hash(
@@ -2544,6 +2903,7 @@ def remove_command(args: argparse.Namespace) -> None:
                 {
                     "action": "remove",
                     "profile": state["profile"],
+                    "agent_roles_changed": [path.relative_to(home).as_posix() for path in role_plan["changed"]],
                     "skills_root": str(installed_skills_root),
                     "skills": sorted(state.get("skills", {})),
                     "project_skills_root": str(installed_project_skills_root),
@@ -2576,6 +2936,7 @@ def remove_command(args: argparse.Namespace) -> None:
             existed = backup_optional_file(path, backups / f"{name}-agents.bin")
             extra_instruction_files[name] = {"path": str(path), "existed": existed}
         state_existed = backup_optional_file(state_path(home), backups / "state.json")
+        role_backups = backup_agent_roles(role_plan, staging_root, home)
         skill_existence = {
             skill: (installed_skills_root / skill).exists()
             for skill in state.get("skills", {})
@@ -2598,6 +2959,7 @@ def remove_command(args: argparse.Namespace) -> None:
                 "projects_existed": projects_existed,
                 "instruction_files": extra_instruction_files,
                 "state_existed": state_existed,
+                **role_backups,
                 "skills_root": str(installed_skills_root),
                 "skills": skill_existence,
                 "project_skills_root": str(installed_project_skills_root),
@@ -2647,13 +3009,14 @@ def remove_command(args: argparse.Namespace) -> None:
                 atomic_write_text(path, new_text)
             else:
                 path.unlink(missing_ok=True)
+        apply_agent_role_plan(role_plan, home)
         state_path(home).unlink(missing_ok=True)
         mark_transaction_committed(staging_root)
         success = True
     except Exception:
         if journal_written:
             recover_transactions(
-                manager_root, home, projects_root, repo_root, project_root
+                manager_root, home, projects_root, repo_root, project_root, roles_locked=True
             )
         raise
     finally:
@@ -2683,8 +3046,8 @@ def sync_instructions_command(args: argparse.Namespace) -> None:
                 raise ConfigError(f"Missing instruction fragment: {item}")
     private_root = projects_root / "private"
     blocks = render_instruction_blocks(repo_root, manifest, private_root, args.profile)
-    targets = instruction_targets(home, projects_root, manifest)
     state = load_state(home)
+    targets = instruction_targets(home, projects_root, manifest, (state or {}).get("instruction_block_sha256", {}))
     if state is not None and state["profile"] != args.profile:
         raise ConfigError(
             f"Installed profile is '{state['profile']}'; sync-instructions does not switch skill profiles"
@@ -2789,6 +3152,7 @@ def sync_instructions_command(args: argparse.Namespace) -> None:
 
 
 def validate_source(repo_root: Path, manifest: dict[str, Any]) -> None:
+    desired_agent_roles(repo_root, manifest)
     markers = manifest["markers"]
     marker_values = [
         markers[key]
@@ -3031,6 +3395,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_instructions.add_argument("--force", "-Force", action="store_true")
     sync_instructions.set_defaults(handler=sync_instructions_command)
 
+    sync_roles = subparsers.add_parser("sync-roles", help="Refresh only manifest-declared global agent roles")
+    add_location_arguments(sync_roles)
+    sync_roles.add_argument("--dry-run", "-DryRun", action="store_true")
+    sync_roles.set_defaults(handler=sync_roles_command)
+
     validate = subparsers.add_parser("validate")
     validate.add_argument("--repo", type=Path, default=REPO_ROOT)
     validate.add_argument("--base-only", "-BaseOnly", action="store_true")
@@ -3074,11 +3443,20 @@ def main() -> int:
             args.handler(args)
             return 0
 
-        validate_target_locations(
-            home, projects_root, skills_root, project_root
-        )
+        if args.command == "sync-roles":
+            validate_role_locations(home)
+        else:
+            validate_target_locations(home, projects_root, skills_root, project_root)
         restrict_private_directory(manager_root)
         with ManagerLock(manager_root):
+            if args.command in {"sync-instructions", "sync-roles"}:
+                for transaction in manager_root.glob("txn-*"):
+                    journal = transaction / "journal.json"
+                    ensure_no_links(journal, manager_root)
+                    if journal.is_file():
+                        pending = load_json(journal)
+                        if pending.get("phase") == "prepared" and pending.get("operation") != args.command:
+                            raise ConfigError("An interrupted full lifecycle operation must be recovered before a focused sync")
             recover_transactions(
                 manager_root, home, projects_root, repo_root, project_root
             )

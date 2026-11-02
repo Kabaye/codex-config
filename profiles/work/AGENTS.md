@@ -1,3 +1,3 @@
-- Find `WORK.md` and `PRIVATE.md` beside the global `AGENTS.md` in `$CODEX_HOME` or `~/.codex`.
-- Use the repository root (`git rev-parse --show-toplevel`), or the working directory outside Git. Select `PRIVATE.md` for `{{PRIVATE_ROOT}}` and its descendants, otherwise `WORK.md`. Compare normalized absolute path components, case-insensitively on Windows.
-- For each new request and whenever the target changes, read the selected policy in a standalone tool call before work or delegation.
+- Classify the target by its repository root (`git rev-parse --show-toplevel`), or its working directory outside Git. Compare normalized absolute path components, case-insensitively on Windows.
+- For `{{PRIVATE_ROOT}}` and its descendants, use the personal Git identity. Use personal accounts only for explicitly authorized tasks; obtain credentials only from the installed `access-personal` access file and use its file helper for SSH.
+- For targets elsewhere, use work accounts and the corporate Git identity; keep work and personal access separate. Webex CLI (`$HOME/Programs/webex-cli/webex.exe`) is available for work communication; send messages only when explicitly requested by the user.

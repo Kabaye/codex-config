@@ -20,6 +20,7 @@ if (-not $python -and -not $launcher) {
     throw 'Python 3.11 or newer is required and was not found on PATH.'
 }
 
+# Focused instruction/role syncs do not provision or load the crypto dependency.
 $needsCrypto = $ManagerArguments.Count -gt 0 -and
     $ManagerArguments[0] -in @('install', 'capture', 'update') -and
     '-DryRun' -notin $ManagerArguments -and '--dry-run' -notin $ManagerArguments

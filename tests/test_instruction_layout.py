@@ -174,6 +174,87 @@ class InstructionLayoutTests(unittest.TestCase):
                     target = manifest["instruction_targets"][name]
                     self.assertEqual(targets[name][0].name, target["path"])
 
+    def _inline_work_sources(self, args):
+        path = args.repo / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest.pop("instructions")
+        manifest["instruction_targets"] = {
+            "global": {"root": "home", "path": "AGENTS.md", "begin": "global_begin", "end": "global_end"},
+            "projects": {"root": "projects", "path": "AGENTS.md", "begin": "projects_begin", "end": "projects_end"},
+        }
+        for definition in manifest["profiles"].values():
+            definition.pop("instruction_layout", None)
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        (args.repo / "work" / "AGENTS.md").write_text(
+            "Below {{PRIVATE_ROOT}}, use the personal account and Git identity; elsewhere use corporate accounts.\n",
+            encoding="utf-8",
+        )
+        (args.repo / "work" / "WORK.md").unlink()
+        (args.repo / "work" / "PRIVATE.md").unlink()
+
+    def test_work_split_migrates_to_inline_policy_preserving_sidecar_user_and_foreign_content(self):
+        for command in (manage.install_command, manage.sync_instructions_command):
+            with self.subTest(command=command.__name__), tempfile.TemporaryDirectory() as raw:
+                args = self._fixture(Path(raw))
+                manage.install_command(args)
+                foreign = "<!-- codex-profiles:begin -->\nforeign policy fixture\n<!-- codex-profiles:end -->"
+                expected = {}
+                for name in ("WORK.md", "PRIVATE.md"):
+                    path = args.home / name
+                    prefix, suffix = f"user prefix for {name}", f"user suffix for {name}"
+                    path.write_text(f"{prefix}\n\n" + path.read_text() + f"\n{foreign}\n\n{suffix}\n", encoding="utf-8")
+                    expected[name] = f"{prefix}\n\n{foreign}\n\n{suffix}\n"
+                self._inline_work_sources(args)
+                command(args)
+                for name, text in expected.items():
+                    self.assertEqual((args.home / name).read_text(encoding="utf-8"), text)
+                global_text = (args.home / "AGENTS.md").read_text(encoding="utf-8")
+                self.assertIn(str(args.projects_root / "private"), global_text)
+                self.assertIn("personal account and Git identity", global_text)
+                self.assertNotIn("Select PRIVATE.md", global_text)
+                self.assertEqual(set(manage.load_state(args.home)["instruction_block_sha256"]), {"global", "projects"})
+                before = {p: p.read_bytes() for p in args.home.rglob("*") if p.is_file()}
+                manage.sync_instructions_command(args)
+                self.assertEqual(before, {p: p.read_bytes() for p in args.home.rglob("*") if p.is_file()})
+
+    def test_fresh_inline_work_never_reads_or_modifies_unowned_sidecars(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._fixture(Path(raw))
+            self._inline_work_sources(args)
+            args.home.mkdir()
+            sidecars = {}
+            for name in ("WORK.md", "PRIVATE.md"):
+                path = args.home / name
+                path.write_text(f"unowned fixture for {name}\n", encoding="utf-8")
+                sidecars[path] = path.read_bytes()
+            original_read = manage.read_text
+
+            def read_without_sidecars(path):
+                if path in sidecars:
+                    raise AssertionError("Inline policy must not read unowned sidecars")
+                return original_read(path)
+
+            with mock.patch.object(manage, "read_text", side_effect=read_without_sidecars):
+                manage.install_command(args)
+                manage.sync_instructions_command(args)
+                manage.status_command(args)
+                manage.capture_command(argparse.Namespace(**vars(args), capture_secrets=False))
+                manage.remove_command(args)
+            for path, value in sidecars.items():
+                self.assertEqual(path.read_bytes(), value)
+
+    def test_work_inline_migration_refuses_modified_owned_sidecar_without_changes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._fixture(Path(raw))
+            manage.install_command(args)
+            path = args.home / "WORK.md"
+            path.write_text(path.read_text().replace("work account rule", "edited account rule"), encoding="utf-8")
+            self._inline_work_sources(args)
+            before = {p: p.read_bytes() for p in args.home.rglob("*") if p.is_file()}
+            with self.assertRaisesRegex(manage.ConfigError, "local edits"):
+                manage.sync_instructions_command(args)
+            self.assertEqual(before, {p: p.read_bytes() for p in args.home.rglob("*") if p.is_file()})
+
     def test_manifest_rejects_unsafe_or_incomplete_instruction_assembly(self):
         with tempfile.TemporaryDirectory() as raw:
             args = self._fixture(Path(raw))
