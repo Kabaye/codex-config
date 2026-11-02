@@ -1,6 +1,3 @@
-## Work profile: account-policy routing
-- The runtime policies beside the global `AGENTS.md` are `WORK.md` and `PRIVATE.md`; resolve their location from nonempty `$CODEX_HOME`, otherwise `~/.codex`.
-- For every new user request, identify the target repository root with `git rev-parse --show-toplevel`; outside a Git repository use the current working directory. Normalize its absolute path before comparing it with `{{PRIVATE_ROOT}}`.
-- Select `PRIVATE.md` only when the target path is `{{PRIVATE_ROOT}}` or a descendant by path component; select `WORK.md` for all other targets. Do not use substring matching. On Windows, compare normalized path components case-insensitively.
-- **Before any task action or delegation**, read only the selected policy in a completed standalone preflight tool call. Never combine this read with task work or agent launches in the same command or parallel tool batch, including native `spawn_agent`, OpenCode, and Cursor. If the policy is missing or unreadable, stop and report.
-- Re-read the selected policy for **every new user request**, even when it was read earlier in the session. If the target repository changes during a request, select and read the applicable policy again before work continues. Do not substitute remembered rules for this read.
+- Find `WORK.md` and `PRIVATE.md` beside the global `AGENTS.md` in `$CODEX_HOME` or `~/.codex`.
+- Use the repository root (`git rev-parse --show-toplevel`), or the working directory outside Git. Select `PRIVATE.md` for `{{PRIVATE_ROOT}}` and its descendants, otherwise `WORK.md`. Compare normalized absolute path components, case-insensitively on Windows.
+- For each new request and whenever the target changes, read the selected policy in a standalone tool call before work or delegation.
