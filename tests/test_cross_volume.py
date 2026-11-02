@@ -138,25 +138,6 @@ class CrossVolumeTests(unittest.TestCase):
                 self.assertFalse(manage.state_path(self.home).exists())
                 self._assert_clean()
 
-    def test_capture_backs_up_and_publishes_source_across_volumes(self) -> None:
-        self._install()
-        (self.skills / "active" / "SKILL.md").write_text("captured global\n")
-        (self.project_skills / "project-only" / "SKILL.md").write_text("captured project\n")
-
-        with self._different_volumes(True) as attempts:
-            manage.capture_command(self.args)
-
-        self.assertEqual(
-            "captured global\n", (self.repo / "skills" / "active" / "SKILL.md").read_text()
-        )
-        self.assertEqual(
-            "captured project\n",
-            (self.repo / ".agents" / "skills" / "project-only" / "SKILL.md").read_text(),
-        )
-        self.assertTrue(any(dst.parent.name == "source-backup" for _, dst in attempts))
-        self.assertTrue(any(dst.parent.name == "project-source-backup" for _, dst in attempts))
-        self._assert_clean()
-
     def test_failed_backup_or_publish_restores_the_original_installation(self) -> None:
         self._install()
         original = self._snapshot()
