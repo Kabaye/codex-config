@@ -25,5 +25,6 @@
 - For Telegram bot projects, read the `bots/AGENTS.md` rules in `{{PROJECTS_ROOT}}/AGENTS.md`. Before implementation, synchronize them into a `codex-config:bots` block in the repository's `AGENTS.md` and follow them; preserve the rest of the file.
 ## Reporting
 - Be precise, distinguish verified facts from assumptions, and prefer clear explanations or diagrams when they help.
+- Use HTML when useful; generate PDF only when explicitly requested.
 - Keep external tickets, reviews, and release notes focused on observable changes, not raw agent logs.
 - Summarize changes, checks, unresolved risks, and required manual steps. Match the user's numbering when they gave a numbered task list.
