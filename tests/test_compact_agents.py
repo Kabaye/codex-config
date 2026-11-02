@@ -27,16 +27,16 @@ class CompactAgentInstructionsTests(unittest.TestCase):
 
     def test_only_work_layout_uses_path_routing(self):
         shared = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        router = (ROOT / "work/AGENTS.md").read_text(encoding="utf-8")
+        router = (ROOT / "profiles/work/AGENTS.md").read_text(encoding="utf-8")
         self.assertNotIn("Runtime account policy", shared)
         self.assertNotIn("{{PRIVATE_ROOT}}", shared)
         for rule in ("`WORK.md` and `PRIVATE.md`", "path component", "{{PRIVATE_ROOT}}", "git rev-parse --show-toplevel"):
             self.assertIn(rule, router)
 
     def test_account_rules_are_split_into_sidecar_sources(self):
-        work = (ROOT / "work/WORK.md").read_text(encoding="utf-8")
-        private = (ROOT / "work/PRIVATE.md").read_text(encoding="utf-8")
-        inline_private = (ROOT / "private/AGENTS.md").read_text(encoding="utf-8")
+        work = (ROOT / "profiles/work/WORK.md").read_text(encoding="utf-8")
+        private = (ROOT / "profiles/work/PRIVATE.md").read_text(encoding="utf-8")
+        inline_private = (ROOT / "profiles/private/AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("corporate Git identity", work)
         self.assertNotIn("personal", work.lower())
         self.assertNotIn("private", work.lower())

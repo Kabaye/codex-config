@@ -6,8 +6,12 @@ Manages **Codex instructions and skill installation**. Model selection, agent ro
 
 | Install profile | Global `$CODEX_HOME/AGENTS.md` | Additional policy files |
 | --- | --- | --- |
-| `work` | `AGENTS.md` + `work/AGENTS.md` | `work/WORK.md` → `WORK.md`; `work/PRIVATE.md` → `PRIVATE.md` |
-| `private` | `AGENTS.md` + `private/AGENTS.md` | None |
+| `work` | `AGENTS.md` + `profiles/work/AGENTS.md` | `profiles/work/WORK.md` → `WORK.md`; `profiles/work/PRIVATE.md` → `PRIVATE.md` |
+| `private` | `AGENTS.md` + `profiles/private/AGENTS.md` | None |
+
+`manifest.json` lists every profile's instruction sources in concatenation order, their runtime destinations and selected skills. Empty fragment lists produce no sidecar file. Current profiles are declared entirely in the manifest; the Python manager reads and applies them. It retains compatibility with older manifests.
+
+For manual installation, open `profiles.private` or `profiles.work` in the manifest, concatenate each `*_fragments` list in order and place the result at the corresponding `instruction_targets` destination. Replace `{{PROJECTS_ROOT}}` with the projects directory and `{{PRIVATE_ROOT}}` with its `private` subdirectory. Keep other content in the destination files. Use the declared begin/end markers around this manager's block if you will later manage it with the script. Source comments are bookkeeping and add no rules.
 
 On work installations, the global path router selects `PRIVATE.md` only inside `<projects-root>/private`, otherwise `WORK.md`. It reads the selected policy before **each request and delegation**. The Work installation's personal policy is independent of the separate Private installation.
 

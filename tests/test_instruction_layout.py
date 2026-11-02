@@ -133,6 +133,60 @@ class InstructionLayoutTests(unittest.TestCase):
             state_after = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(state_before["skills"], state_after["skills"])
 
+    def test_explicit_manifest_sources_override_legacy_layout_and_apply_in_order(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._fixture(Path(raw))
+            path = args.repo / "manifest.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            profile = manifest["profiles"]["work"]
+            profile.update({
+                "instruction_layout": "inline",  # Legacy flag cannot override explicit source lists.
+                "global_fragments": ["work/AGENTS.md", "AGENTS.md"],
+                "work_fragments": [],
+                "private_fragments": [],
+            })
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            manage.install_command(args)
+            text = (args.home / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertLess(text.index("Select PRIVATE.md"), text.index("shared rule"))
+            self.assertFalse((args.home / "WORK.md").exists())
+            self.assertFalse((args.home / "PRIVATE.md").exists())
+
+    def test_current_manifest_matches_manual_instruction_assembly(self):
+        repo = SCRIPT.parents[1]
+        manifest = manage.load_manifest(repo, base_only=True)
+        self.assertNotIn("instructions", manifest)
+        private_root = Path(self._testMethodName) / "private"
+        for profile, definition in manifest["profiles"].items():
+            with self.subTest(profile=profile):
+                self.assertNotIn("instruction_layout", definition)
+                rendered = manage.render_instruction_blocks(repo, manifest, private_root, profile)
+                targets = manage.instruction_targets(Path("codex-home"), private_root.parent, manifest)
+                for name, text in rendered.items():
+                    declared = definition[f"{name}_fragments"]
+                    manual = "\n".join((repo / source).read_text(encoding="utf-8") for source in declared)
+                    for token, value in manage.instruction_path_replacements(private_root).items():
+                        manual = manual.replace(token, value)
+                    actual = manage.SOURCE_MARKER_RE.sub("", text)
+                    for marker in manifest["markers"].values():
+                        actual = actual.replace(marker, "")
+                    self.assertEqual(actual.split(), manual.split())
+                    target = manifest["instruction_targets"][name]
+                    self.assertEqual(targets[name][0].name, target["path"])
+
+    def test_manifest_rejects_unsafe_or_incomplete_instruction_assembly(self):
+        with tempfile.TemporaryDirectory() as raw:
+            args = self._fixture(Path(raw))
+            path = args.repo / "manifest.json"
+            original = json.loads(path.read_text(encoding="utf-8"))
+            manifest = json.loads(json.dumps(original))
+            manifest["profiles"]["work"]["work_fragments"] = ["../outside.md"]
+            manifest["profiles"]["work"]["private_fragments"] = []
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(manage.ConfigError):
+                manage.install_command(args)
+            self.assertFalse(args.home.exists())
+
     def test_sync_dry_run_rejects_local_owned_block_edit_but_allows_profile_edit(self):
         with tempfile.TemporaryDirectory() as raw:
             args = self._fixture(Path(raw))

@@ -214,15 +214,44 @@ def load_manifest(
                 raise ConfigError(f"Invalid instruction fragments: {group}")
             for value in values:
                 validate_relative_value(value, f"instructions.{group} entry")
+    targets = manifest.get("instruction_targets")
+    if targets is not None:
+        if not isinstance(targets, dict) or set(targets) != {"global", "work", "private", "projects"}:
+            raise ConfigError("Manifest instruction_targets are invalid")
+        destinations = set()
+        for name, target in targets.items():
+            if not isinstance(target, dict) or set(target) != {"root", "path", "begin", "end"}:
+                raise ConfigError(f"Invalid instruction target: {name}")
+            if target["root"] not in {"home", "projects"}:
+                raise ConfigError(f"Invalid instruction target root: {name}")
+            validate_relative_value(target["path"], f"instruction target {name}")
+            if any(target[key] not in manifest["markers"] for key in ("begin", "end")):
+                raise ConfigError(f"Unknown instruction target marker: {name}")
+            destination = (target["root"], target["path"].replace("\\", "/").casefold())
+            if destination in destinations:
+                raise ConfigError("Duplicate instruction target destination")
+            destinations.add(destination)
+        # These are native/runtime contract filenames, not profile routing rules.
+        expected_targets = {
+            "global": ("home", "AGENTS.md", "global_begin", "global_end"),
+            "work": ("home", "WORK.md", "global_begin", "global_end"),
+            "private": ("home", "PRIVATE.md", "global_begin", "global_end"),
+            "projects": ("projects", "AGENTS.md", "projects_begin", "projects_end"),
+        }
+        for name, expected in expected_targets.items():
+            if tuple(targets[name][key] for key in ("root", "path", "begin", "end")) != expected:
+                raise ConfigError(f"Instruction target {name} must use its native runtime destination")
     for name, config in manifest["profiles"].items():
         validate_safe_name(name, "profile name")
         if not isinstance(config, dict):
             raise ConfigError(f"Invalid profile: {name}")
         if config.get("instruction_layout") not in (None, "split", "inline"):
             raise ConfigError(f"Profile {name} has an invalid instruction_layout")
-        for group in ("global_fragments", "projects_fragments"):
+        groups = ("global_fragments", "work_fragments", "private_fragments", "projects_fragments")
+        explicit_layout = any(key in config for key in ("work_fragments", "private_fragments"))
+        for group in groups if explicit_layout else ("global_fragments", "projects_fragments"):
             values = config.get(group)
-            if not isinstance(values, list) or not values:
+            if not isinstance(values, list) or (group in {"global_fragments", "projects_fragments"} and not values):
                 raise ConfigError(f"Profile {name} has invalid {group}")
             for value in values:
                 validate_relative_value(value, f"{name}.{group} entry")
@@ -273,6 +302,10 @@ def instruction_layout(
 ) -> dict[str, list[str]]:
     """Return the selected profile's instruction sources and runtime layout."""
     config = profile_config(manifest, profile)
+    groups = ("global_fragments", "work_fragments", "private_fragments", "projects_fragments")
+    if all(group in config for group in groups):
+        return {group: config[group] for group in groups}
+    # Compatibility for manifests predating explicit per-profile source lists.
     configured = manifest.get("instructions")
     mode = config.get("instruction_layout")
     if isinstance(configured, dict) and mode is None:
@@ -1377,9 +1410,6 @@ def source_fingerprint(
     source_repo = skills_repository_root(repo_root)
     paths: set[Path] = {repo_root / "manifest.json"}
     instruction_groups = instruction_layout(manifest, profile)
-    for group in ("global_fragments", "projects_fragments"):
-        for item in config[group]:
-            paths.add(relative_path(repo_root, item))
     for group in ("global_fragments", "work_fragments", "private_fragments", "projects_fragments"):
         for item in instruction_groups[group]:
             paths.add(relative_path(repo_root, item))
@@ -1651,7 +1681,18 @@ def managed_instruction_text(
     return build_global_text(current, desired, legacy, begin, end, force)
 
 
-def instruction_targets(home: Path, projects_root: Path) -> dict[str, tuple[Path, str, str]]:
+def instruction_targets(home: Path, projects_root: Path, manifest: dict[str, Any] | None = None) -> dict[str, tuple[Path, str, str]]:
+    configured = (manifest or {}).get("instruction_targets")
+    if configured is not None:
+        roots = {"home": home, "projects": projects_root}
+        result = {}
+        for name, target in configured.items():
+            root = roots[target["root"]]
+            path = relative_path(root, target["path"])
+            ensure_no_links(path, root)
+            result[name] = (path, target["begin"], target["end"])
+        return result
+    # Historical manifests used these fixed runtime names.
     return {
         "global": (home / "AGENTS.md", "global_begin", "global_end"),
         "work": (home / "WORK.md", "global_begin", "global_end"),
@@ -1811,7 +1852,7 @@ def install_command(args: argparse.Namespace) -> None:
     markers = manifest["markers"]
     private_root = projects_root / "private"
     instruction_blocks = render_instruction_blocks(repo_root, manifest, private_root, args.profile)
-    targets = instruction_targets(home, projects_root)
+    targets = instruction_targets(home, projects_root, manifest)
     owned_instruction_hashes = (previous or {}).get("instruction_block_sha256", {})
     if previous and not owned_instruction_hashes:
         owned_instruction_hashes = {
@@ -2166,7 +2207,7 @@ def status_command(args: argparse.Namespace) -> None:
                 markers[begin_key],
                 markers[end_key],
             ) == instruction_hashes.get(name)
-            for name, (path, begin_key, end_key) in instruction_targets(home, projects_root).items()
+            for name, (path, begin_key, end_key) in instruction_targets(home, projects_root, manifest).items()
             if name in instruction_hashes
         },
         "skills": skills,
@@ -2212,7 +2253,7 @@ def capture_command(args: argparse.Namespace) -> None:
     )
     config = profile_config(manifest, profile)
     markers = manifest["markers"]
-    targets = instruction_targets(home, projects_root)
+    targets = instruction_targets(home, projects_root, manifest)
     layout = instruction_layout(manifest, profile)
     captured_fragments: dict[str, str] = {}
     located_blocks: dict[str, tuple[int, int, str]] = {}
@@ -2469,7 +2510,7 @@ def remove_command(args: argparse.Namespace) -> None:
     markers = manifest["markers"]
     global_path = home / "AGENTS.md"
     projects_path = projects_root / "AGENTS.md"
-    targets = instruction_targets(home, projects_root)
+    targets = instruction_targets(home, projects_root, manifest)
     instruction_hashes = state.get("instruction_block_sha256", {})
     if not args.force:
         if current_block_hash(
@@ -2642,7 +2683,7 @@ def sync_instructions_command(args: argparse.Namespace) -> None:
                 raise ConfigError(f"Missing instruction fragment: {item}")
     private_root = projects_root / "private"
     blocks = render_instruction_blocks(repo_root, manifest, private_root, args.profile)
-    targets = instruction_targets(home, projects_root)
+    targets = instruction_targets(home, projects_root, manifest)
     state = load_state(home)
     if state is not None and state["profile"] != args.profile:
         raise ConfigError(
@@ -2768,12 +2809,12 @@ def validate_source(repo_root: Path, manifest: dict[str, Any]) -> None:
                 content = read_text(path)
                 if ROUTING_BEGIN in content or ROUTING_END in content:
                     raise ConfigError(f"Base instructions must not contain routing markers: {item}")
-        if "private/AGENTS.md" in layout["work_fragments"]:
+        if any(item in layout["work_fragments"] for item in ("private/AGENTS.md", "profiles/private/AGENTS.md")):
             raise ConfigError("Work instructions must not include the private account source")
         if not isinstance(config, dict):
             raise ConfigError(f"Invalid profile: {name}")
         for group in ("global_fragments", "projects_fragments"):
-            values = config.get(group)
+            values = layout[group]
             if not isinstance(values, list) or not values:
                 raise ConfigError(f"Profile {name} has no {group}")
             for item in values:
