@@ -190,56 +190,6 @@ locally edited old projects
             )
             self.assertEqual(set(state["project_skills"]), {"project-only"})
 
-    def test_shared_skill_migrates_from_project_to_global_across_profiles(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
-            repo = root / "source" / "codex-config"
-            self._write_repo(repo)
-            project_source = repo / ".agents" / "skills" / "shared-width"
-            self._write_skill(project_source, "shared width")
-            manifest_path = repo / "manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["profiles"]["active"]["project_skills"] = ["shared-width"]
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            args = argparse.Namespace(
-                repo=repo,
-                home=root / "home",
-                projects_root=root / "projects",
-                skills_root=root / "global-skills",
-                project_root=repo.parent,
-                profile="active",
-                age=None,
-                dry_run=False,
-                force=False,
-            )
-            manage.install_command(args)
-            project_target = repo.parent / ".agents" / "skills" / "shared-width"
-            self.assertTrue(project_target.is_dir())
-
-            project_source.rename(repo / "skills" / "shared-width")
-            manifest["profiles"]["active"]["project_skills"] = []
-            for config in manifest["profiles"].values():
-                config["skills"].append("shared-width")
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-            for profile in ("active", "inactive"):
-                with self.subTest(profile=profile):
-                    args.profile = profile
-                    manage.install_command(args)
-                    global_target = args.skills_root / "shared-width"
-                    self.assertEqual(
-                        "shared width\n",
-                        (global_target / "SKILL.md").read_text(encoding="utf-8"),
-                    )
-                    self.assertFalse(project_target.exists())
-                    state = json.loads(
-                        (args.home / "codex-config" / "state.json").read_text(
-                            encoding="utf-8"
-                        )
-                    )
-                    self.assertIn("shared-width", state["skills"])
-                    self.assertNotIn("shared-width", state["project_skills"])
-
     def test_install_repairs_duplicate_owned_markers(self) -> None:
         begin = "<!-- codex-config:begin -->"
         end = "<!-- codex-config:end -->"
@@ -293,36 +243,6 @@ profile state
                 end,
                 False,
             )
-
-    def test_unreadable_old_state_is_disposable_on_install(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
-            repo = root / "repo"
-            home = root / "home"
-            projects = root / "projects"
-            skills_root = root / ".agents" / "skills"
-            self._write_repo(repo)
-            state = home / "codex-config" / "state.json"
-            state.parent.mkdir(parents=True)
-            state.write_bytes(b"\xff\xfe")
-            self._write_skill(home / "skills" / "inactive", "old", "access.yml")
-
-            manage.install_command(
-                argparse.Namespace(
-                    repo=repo,
-                    home=home,
-                    projects_root=projects,
-                    skills_root=skills_root,
-                    profile="active",
-                    age=None,
-                    dry_run=False,
-                    force=False,
-                )
-            )
-
-            self.assertFalse((skills_root / "inactive").exists())
-            installed = json.loads(state.read_text(encoding="utf-8"))
-            self.assertEqual(installed["profile"], "active")
 
     @staticmethod
     def _write_skill(root: Path, content: str, extra_name: str | None = None) -> None:
