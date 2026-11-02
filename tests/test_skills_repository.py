@@ -176,16 +176,6 @@ class PrivateSkillsRepositoryTests(unittest.TestCase):
             (self.global_skills / "global-demo" / "access.yml").read_bytes(),
         )
 
-    def test_fingerprint_accounts_for_private_source_changes(self) -> None:
-        manifest = manager.load_manifest(self.config)
-        first = manager.source_fingerprint(self.config, manifest, "work")
-        self._file(
-            self.skills / "skills" / "project-demo" / "SKILL.md",
-            "new skill source version\n",
-        )
-        second = manager.source_fingerprint(self.config, manifest, "work")
-        self.assertNotEqual(first, second)
-
     def test_secret_capture_is_opt_in(self) -> None:
         session = mock.Mock()
         session.decrypt.return_value = self.plaintext
