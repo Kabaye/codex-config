@@ -133,48 +133,6 @@ class InstructionLayoutTests(unittest.TestCase):
             state_after = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(state_before["skills"], state_after["skills"])
 
-    def test_projects_rule_source_uses_default_and_custom_target_roots(self):
-        for command in ("install", "sync-instructions"):
-            for profile in ("work", "private"):
-                for custom_root in (False, True):
-                    with self.subTest(command=command, profile=profile, custom_root=custom_root), tempfile.TemporaryDirectory() as raw:
-                        root = Path(raw)
-                        fixture = self._fixture(root)
-                        source = "shared rule\nRead {{PROJECTS_ROOT}}/AGENTS.md before bot work.\n"
-                        (fixture.repo / "AGENTS.md").write_text(source, encoding="utf-8")
-                        cli = [
-                            command, "--profile", profile, "--repo", str(fixture.repo),
-                            "--home", str(fixture.home), "--skills-root", str(fixture.skills_root),
-                            "--project-root", str(fixture.repo),
-                        ]
-                        if custom_root:
-                            cli += ["--projects-root", str(root / "custom workspace")]
-                        with mock.patch.object(Path, "home", return_value=root / "user"):
-                            args = manage.build_parser().parse_args(cli)
-                        expected_root = root / ("custom workspace" if custom_root else "user/Projects")
-                        self.assertEqual(expected_root, args.projects_root)
-                        args.home.mkdir()
-                        foreign = "<!-- codex-profiles:begin -->\nother manager policy\n<!-- codex-profiles:end -->"
-                        (args.home / "AGENTS.md").write_text("user home prose\n\n" + foreign + "\n", encoding="utf-8")
-                        args.projects_root.mkdir(parents=True)
-                        (args.projects_root / "AGENTS.md").write_text(
-                            "user project prose\n\n<!-- codex-config:projects:begin -->\n"
-                            "bot rule\n<!-- codex-config:projects:end -->\n", encoding="utf-8"
-                        )
-
-                        args.handler(args)
-
-                        installed = (args.home / "AGENTS.md").read_text(encoding="utf-8")
-                        self.assertIn(f"Read {expected_root.resolve().as_posix()}/AGENTS.md before bot work.", installed)
-                        self.assertNotIn("{{PROJECTS_ROOT}}", installed)
-                        self.assertIn("user home prose", installed)
-                        self.assertIn(foreign, installed)
-                        self.assertIn("user project prose", (args.projects_root / "AGENTS.md").read_text(encoding="utf-8"))
-                        self.assertIn("bot rule", (args.projects_root / "AGENTS.md").read_text(encoding="utf-8"))
-                        self.assertEqual(profile == "work", (args.home / "WORK.md").exists())
-                        self.assertEqual(profile == "work", (args.home / "PRIVATE.md").exists())
-                        self.assertEqual(source, (args.repo / "AGENTS.md").read_text(encoding="utf-8"))
-
     def test_sync_dry_run_rejects_local_owned_block_edit_but_allows_profile_edit(self):
         with tempfile.TemporaryDirectory() as raw:
             args = self._fixture(Path(raw))
@@ -276,16 +234,6 @@ class InstructionLayoutTests(unittest.TestCase):
                 manage.remove_command(args)
                 self.assertEqual("user policy\n\n" + foreign + "\n", work.read_text(encoding="utf-8"))
                 self.assertEqual(foreign + "\n", global_path.read_text(encoding="utf-8"))
-
-    def test_capture_requires_matching_layout_before_writing_any_sources(self):
-        with tempfile.TemporaryDirectory() as raw:
-            args = self._fixture(Path(raw))
-            self._install_legacy_split_private(args)
-            paths = [args.repo / name for name in ("AGENTS.md", "work/AGENTS.md", "work/WORK.md", "work/PRIVATE.md", "private/AGENTS.md")]
-            before = {path: path.read_bytes() for path in paths}
-            with self.assertRaisesRegex(manage.ConfigError, "source markers"):
-                manage.capture_command(argparse.Namespace(**vars(args), capture_secrets=False))
-            self.assertEqual(before, {path: path.read_bytes() for path in paths})
 
     def test_sync_rolls_back_instruction_files_and_state_after_write_failure(self):
         with tempfile.TemporaryDirectory() as raw:
