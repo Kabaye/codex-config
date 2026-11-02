@@ -4,11 +4,7 @@
     "global_begin": "<!-- codex-config:begin -->",
     "global_end": "<!-- codex-config:end -->",
     "projects_begin": "<!-- codex-config:projects:begin -->",
-    "projects_end": "<!-- codex-config:projects:end -->",
-    "work_begin": "<!-- codex-config:begin -->",
-    "work_end": "<!-- codex-config:end -->",
-    "private_begin": "<!-- codex-config:begin -->",
-    "private_end": "<!-- codex-config:end -->"
+    "projects_end": "<!-- codex-config:projects:end -->"
   },
   "instructions": {
     "global_fragments": [
@@ -78,7 +74,5 @@
         "claude-review"
       ]
     }
-  },
-  "skill_policy": {},
-  "encrypted_files": {}
+  }
 }
