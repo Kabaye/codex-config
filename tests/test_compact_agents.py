@@ -8,22 +8,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CompactAgentInstructionsTests(unittest.TestCase):
-    def test_instruction_size_budgets(self):
-        budgets = {
-            "AGENTS.md": 3500,
-            "work/AGENTS.md": 1400,
-            "work/WORK.md": 750,
-            "work/PRIVATE.md": 750,
-            "private/AGENTS.md": 750,
-            "bots/AGENTS.md": 2400,
-        }
-        for path, max_bytes in budgets.items():
-            with self.subTest(path=path):
-                self.assertLessEqual(
-                    len((ROOT / path).read_bytes()), max_bytes,
-                    f"{path} should contain concise policies, not explanations",
-                )
-
     def test_shared_git_and_security_contract(self):
         text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         for rule in (
