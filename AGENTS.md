@@ -8,7 +8,8 @@
 - Never commit secrets or private information in files or Git metadata. Use synthetic data and portable placeholders instead of personal, financial or infrastructure details.
 - Display secrets or private information only when the user explicitly requests those details.
 - Before SSH, check `access-personal` for the resource's source: native SSH with 1Password for `agent`, its helper for `file`. Change modes or grant file exceptions only at the user's explicit request.
-## Browser and Computer Use
+## Tools and interfaces
+- Prefer a suitable installed CLI, then API/MCP, then browser, then desktop Computer Use. Fix invocation errors before falling back; respect access denials across interfaces.
 - Use Opera through the Browser extension for browser tasks. Handle straightforward browser workflows directly.
 - Use desktop Computer Use only when the user explicitly requests it or approves it for the task. Delegate authorized desktop GUI work to `terra_computer` and verify the visible result. Report unavailable model, tools or permissions.
 - Use the in-app browser only for a target tab opened by the user.
