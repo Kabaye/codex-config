@@ -23,7 +23,6 @@
 - Report installed tools/dependencies and their purpose in the final response.
 ## Work and verification
 - Run focused tests while implementing; run broader checks after the full implementation.
-- For running commands and subagents, use 30–60 second blocking waits that return early on completion; reuse the existing session.
 - Store task workflow files in `temp/task-plans/`.
 - For Telegram bot projects, read the `bots/AGENTS.md` rules in `{{PROJECTS_ROOT}}/AGENTS.md`. Before implementation, synchronize them into a `codex-config:bots` block in the repository's `AGENTS.md` and follow them; preserve the rest of the file.
 ## Reporting
