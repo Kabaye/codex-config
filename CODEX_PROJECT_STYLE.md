@@ -17,8 +17,9 @@ The `Color` values and built-in icon identifiers below are Codex settings.
 | Finance | Budgets, bank transactions and importers, investments, trading, and financial analysis | `yellow` | Built-in `currency-dollar` |
 | Loan systems | Lending platforms, P2P loans, borrower lookup, repayments, and loan-management analytics | `pink` | Built-in `scale` |
 | Bots | Standalone messaging bots, chat assistants, and bot-centered automation | `green` | Emoji **🤖** |
+| System | Windows and other desktop operating systems, drivers, hardware, local services, power settings, and PC maintenance | `blue` | Built-in `wrench` |
 | Networks | Routers, VPNs, DNS, connectivity, and network troubleshooting | `blue` | Built-in `globe` |
-| Servers | Hosting, operating systems, deployments, and server administration | `blue` | Built-in `terminal` |
+| Servers | Hosting, server operating systems, deployments, and server administration | `blue` | Built-in `terminal` |
 | Work projects | Concrete corporate/work repositories, services, deliveries, and work streams | `red` | Built-in `folder` |
 | Personal development and integrations | Personal software projects, developer tooling, MCP servers, and API adapters | `purple` | Built-in `function` (code brackets) |
 | Codex setup | Codex configuration, profiles, skills, agents, and application setup | `purple` | Built-in `customize` |
@@ -26,9 +27,15 @@ The `Color` values and built-in icon identifiers below are Codex settings.
 
 For general topics, select **Use Default**, the first color swatch in the
 project marker picker; Codex stores this neutral color as `black`.
-Reserve red for work projects and broad work hubs. Use blue for networks and
-servers, and pink for loan systems. Exclude orange from this palette because
-its small outlined markers look too close to red.
+Reserve red for work projects and broad work hubs. Use blue for system, network,
+and server projects, and pink for loan systems. Exclude orange from this palette
+because its small outlined markers look too close to red.
+
+Use the System category for maintaining the local computer and its operating
+system. Its `wrench` marker represents setup, diagnostics, and repair. Use
+Networks for connectivity and Servers for hosted services and remote machine
+administration. Keep dedicated Codex configuration in Codex setup, even when
+Codex runs on the same computer.
 
 Bots share a marker by project type even when their business topics differ.
 A complete loan-management platform stays in the loan category when a bot is
@@ -46,27 +53,32 @@ together within each block:
 
 1. **General workspaces and broad discussion hubs.** General-purpose chats,
    company-wide work discussions, broad product or business-area workspaces,
-   and Codex setup belong at the top. A broad work umbrella workspace uses the
-   same red color as concrete work projects but retains its existing built-in
-   `edit` pencil icon to distinguish its role. Keep it here rather than among
-   concrete work projects.
+   local system maintenance, and Codex setup belong at the top. A broad work
+   umbrella workspace uses the same red color as concrete work projects but
+   retains its existing built-in `edit` pencil icon to distinguish its role.
+   Keep it here rather than among concrete work projects.
 2. **Concrete work projects.** Specific corporate/work repositories, services,
    deliveries, and work streams follow the general workspaces. Use red with
    the built-in folder icon for these projects. This block is normally present
    on a work computer; skip it on a personal computer when there are no work
    projects.
 3. **Bots.** Keep standalone bot projects together.
-4. **Infrastructure.** Keep network and server projects together.
+4. **Infrastructure.** Keep network and server projects together, in that
+   order: connectivity, then hosted services.
 5. **Other focused topics and code.** Finance, loan systems, personal
    development and integrations, and other software projects follow, grouped
    by their category.
 
-Within the first block, place the broadest general workspaces before narrower
-area hubs and tool-setup workspaces. Keep a stable, readable order within the
-remaining blocks, preserving existing relative order where possible.
+Within the first block, place general-purpose chats first, the local System
+hub next, and Codex setup after it: **common → system → codex**. Keep other
+broad area hubs near their related general workspaces. Keep a stable, readable
+order within the remaining blocks, preserving existing relative order where
+possible.
 
-Workspace role takes precedence over color adjacency: a Codex setup hub belongs
-at the top even when other purple development projects belong near the bottom.
+Workspace role takes precedence over color adjacency: the System hub belongs
+at the top even when blue network and server projects belong further down;
+Codex setup also stays at the top while other purple development projects
+belong near the bottom.
 Use the project's purpose rather than its name or the active profile alone to
 distinguish a broad work umbrella from a concrete corporate/work project or a
 personal development project. Apply the red/folder style to concrete work and
