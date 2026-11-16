@@ -10,6 +10,7 @@
 - Before SSH, check `access-personal` for the resource's source: native SSH with 1Password for `agent`, its helper for `file`. Change modes or grant file exceptions only at the user's explicit request.
 ## Tools and interfaces
 - Prefer a suitable installed CLI, then API/MCP, then browser, then desktop Computer Use. Fix invocation errors before falling back; respect access denials across interfaces.
+- Use only the connected Telegram plugin for authorized reads and sends; default to @thekabaye unless the user specifies another account.
 - Use Opera through the Browser extension for browser tasks. Handle straightforward browser workflows directly.
 - Use desktop Computer Use only when the user explicitly requests it or approves it for the task. Delegate authorized desktop GUI work to `terra_computer` and verify the visible result. Report unavailable model, tools or permissions.
 - Use the in-app browser only for a target tab opened by the user.
