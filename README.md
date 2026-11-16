@@ -15,7 +15,7 @@ For manual installation, open `profiles.private` or `profiles.work` in the manif
 
 Both installations carry their complete account policy in the global `AGENTS.md`. Work applies the inline personal-account, Git-identity and SSH access-file rules under `<projects-root>/private`, using normalized path components; it applies the work rules elsewhere. The Work installation's personal policy remains independent of the separate Private installation.
 
-Corporate routing and native Solo/Team delegation belong to the global `codex-profiles` block. Universal browser/Computer Use policy belongs to this repository's common `AGENTS.md` and is installed in both profiles. Install or instruction sync retires recorded legacy `WORK.md`/`PRIVATE.md` blocks while preserving user prose and other managers' blocks.
+Corporate routing and native Solo/Team delegation belong to the global `codex-profiles` block. Universal browser/Computer Use and default language policies belong to this repository's common `AGENTS.md` and are installed in both profiles. Install or instruction sync retires recorded legacy `WORK.md`/`PRIVATE.md` blocks while preserving user prose and other managers' blocks.
 
 The shared `bots/AGENTS.md` source is installed as `<projects-root>/AGENTS.md` and synchronized into bot repositories when working on Telegram bots. Other project instructions remain untouched.
 

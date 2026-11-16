@@ -27,6 +27,7 @@
 - Store task workflow files in `temp/task-plans/`.
 - For Telegram bot projects, read the `bots/AGENTS.md` rules in `{{PROJECTS_ROOT}}/AGENTS.md`. Before implementation, synchronize them into a `codex-config:bots` block in the repository's `AGENTS.md` and follow them; preserve the rest of the file.
 ## Reporting
+- Use English by default for content in work systems (including TMS and GitLab) and all subagent instructions, reasoning and replies, unless the user explicitly requests another language. Match the user's language in chat.
 - Be precise, distinguish verified facts from assumptions, and prefer clear explanations or diagrams when they help.
 - Use HTML when useful; generate PDF only when explicitly requested.
 - Keep external tickets, reviews, and release notes focused on observable changes, not raw agent logs.
