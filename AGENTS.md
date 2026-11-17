@@ -13,7 +13,7 @@
 - Use only the connected Telegram plugin for authorized reads and sends; default to @thekabaye unless the user specifies another account.
 - Use Opera through the Browser extension for browser tasks. Handle straightforward browser workflows directly.
 - Use desktop Computer Use only when the user explicitly requests it or approves it for the task. Delegate authorized desktop GUI work to `terra_computer` and verify the visible result. Report unavailable model, tools or permissions.
-- Use the in-app browser only for a target tab opened by the user.
+- Never use the in-app browser.
 ## Files and tooling
 - Keep agent-only scratch files, downloads, one-off scripts, and logs in the project's `temp/`; add `temp/` to `.gitignore`.
 - Verify required tools before use.
