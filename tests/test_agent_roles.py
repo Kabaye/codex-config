@@ -111,6 +111,29 @@ class AgentRoleTests(unittest.TestCase):
         manage.sync_roles_command(self.args)
         self.assertIn(b'updated-fixture-model', self.role_path().read_bytes())
 
+    def test_sync_multiple_specialists_preserves_root_and_foreign_roles(self):
+        second_name = "codex-config/fixture-designer.toml"
+        second_source = self.repo / "agents" / "fixture-designer.toml"
+        second_source.write_text(self.definition().replace("fixture_gui", "fixture_designer"), encoding="utf-8")
+        self.manifest["agent_roles"][second_name] = "agents/fixture-designer.toml"
+        self.write_manifest()
+        self.home.mkdir()
+        config = self.home / "config.toml"
+        config.write_text('model = "fixture-selected-root"\n', encoding="utf-8")
+        foreign = self.home / "agents" / "codex-profiles" / "fixture-worker.toml"
+        foreign.parent.mkdir(parents=True)
+        foreign.write_text("foreign worker fixture\n", encoding="utf-8")
+        before = {path: path.read_bytes() for path in (config, foreign)}
+        manage.sync_roles_command(self.args)
+        expected = {
+            self.role_name: manage.sha256_bytes(self.expected_role_bytes()),
+            second_name: manage.sha256_bytes(second_source.read_bytes().replace(b"\r\n", b"\n")),
+        }
+        self.assertEqual(self.state()["owned"], expected)
+        for name, digest in expected.items():
+            self.assertEqual(manage.sha256_bytes((self.home / "agents" / name).read_bytes()), digest)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
     def test_full_install_both_profiles_and_remove_manage_roles_preserving_other_owners(self):
         self.role_path().parent.mkdir(parents=True)
         other = self.home / "agents" / "codex-profiles" / "native-worker.toml"

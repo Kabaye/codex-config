@@ -14,6 +14,7 @@
 - Use Opera through the Browser extension for browser tasks. Handle straightforward browser workflows directly.
 - Use desktop Computer Use only when the user explicitly requests it or approves it for the task. Delegate authorized desktop GUI work to `terra_computer` and verify the visible result. Report unavailable model, tools or permissions.
 - Never use the in-app browser.
+- For design generation, you may offer root/Sol 6.2 or `astra_designer` (Astra 6.2). Use Astra only after the user explicitly requests or selects it.
 ## Files and tooling
 - Keep agent-only scratch files, downloads, one-off scripts, and logs in the project's `temp/`; add `temp/` to `.gitignore`.
 - Verify required tools before use.

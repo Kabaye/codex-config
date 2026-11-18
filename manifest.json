@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "agent_roles": {
-    "codex-config/terra-computer.toml": "agents/terra-computer.toml"
+    "codex-config/terra-computer.toml": "agents/terra-computer.toml",
+    "codex-config/astra-designer.toml": "agents/astra-designer.toml"
   },
   "markers": {
     "global_begin": "<!-- codex-config:begin -->",
