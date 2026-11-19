@@ -35,6 +35,8 @@ Both managers coordinate role publication through `$CODEX_HOME/.agent-roles.lock
 
 `manifest.json` selects global and project-scoped skills per profile. Global skills go to `~/.agents/skills/<name>`; project-scoped skills go to `<project-root>/.agents/skills/<name>`. Skill sources are in the sibling private `codex-skills/skills/<name>` checkout. `profiles/<profile>/` overlays inside a skill source customize only the selected installation.
 
+Work uses the Codex core bundled with the app. Better Codex is available only in the Private skill set, with custom core selection handled separately from profile installation.
+
 The `access-personal` skill has shared scripts with profile-dependent access rules. Work uses saved SSH credentials; Private can select native SSH through 1Password (`agent`) or a file-based helper (`file`). A user-authorized file exception is scoped to one chat/resource for 60 minutes. Host keys must be preverified. SSH config, endpoints, keys, credentials and runtime mode state **never belong in Git**. Encrypted `access.yml.age` sources are decrypted only on an authorized machine; `capture` does not re-encrypt them unless explicitly requested.
 
 ## Install and update

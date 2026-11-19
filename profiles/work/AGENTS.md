@@ -2,3 +2,4 @@
 - For `{{PRIVATE_ROOT}}` and its descendants, use the personal Git identity. Use personal accounts only for explicitly authorized tasks; obtain credentials only from the installed `access-personal` access file and use its file helper for SSH.
 - For targets elsewhere, use work accounts and the corporate Git identity; keep work and personal access separate. Webex CLI (`$HOME/Programs/webex-cli/webex.exe`) is available for work communication; send messages only when explicitly requested by the user.
 - For work tasks, never build locally. Push changes, verify that commit's cloud CI build result and logs, then fix failures and repeat.
+- Use the bundled Codex core with this profile. Do not install, enable or run Better Codex in Work.
