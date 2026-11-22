@@ -26,6 +26,8 @@
 ## Work and verification
 - Run focused tests while implementing; run broader checks after the full implementation.
 - Store task workflow files in `temp/task-plans/`.
+- For a task in `$task-start` or `$task-discuss`, keep that stage active across turns until the user explicitly invokes a different stage for that task. Imperatives such as “fix”, “restore” or “apply”, agreement, and a ready plan specify the desired outcome. The user starts implementation with an explicit `$task-implement` invocation for the selected task in the current chat.
+- Before each tool call for that task, check the active stage and the call's side effects, including calls through other skills and delegates. Capture can write the plan and its attachments. Discussion can inspect systems read-only, update the plan, and create local discussion artifacts in ignored `temp/`. Repository edits, deployments, external sends, and writes to live data or settings require authorized implementation. When authorization is unclear, keep inspection read-only. Run expressly requested experiments on isolated local copies or fixtures under `temp/`.
 - For Telegram bot projects, read the `bots/AGENTS.md` rules in `{{PROJECTS_ROOT}}/AGENTS.md`. Before implementation, synchronize them into a `codex-config:bots` block in the repository's `AGENTS.md` and follow them; preserve the rest of the file.
 ## Reporting
 - Use English by default for content in work systems (including TMS and GitLab) and all subagent instructions, reasoning and replies, unless the user explicitly requests another language. Match the user's language in chat.
