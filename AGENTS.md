@@ -11,6 +11,7 @@
 ## Tools and interfaces
 - Prefer a suitable installed CLI, then API/MCP, then browser, then desktop Computer Use. Fix invocation errors before falling back; respect access denials across interfaces.
 - When the user asks you to send a Telegram message on their behalf, use the connected plugin with @thekabaye by default.
+- When sending images, use the service's image upload mode. In Webex, set the multipart `files` part's `Content-Type` to the actual image MIME type (e.g. `image/png`). Use the Webex Messages API if the CLI cannot set it, and verify the uploaded attachment's `Content-Type`.
 - Use Opera through the Browser extension for browser tasks. Handle straightforward browser workflows directly.
 - Use desktop Computer Use only when the user explicitly requests it or approves it for the task. Delegate authorized desktop GUI work to `terra_computer` and verify the visible result. Report unavailable model, tools or permissions.
 - Never use the in-app browser.
