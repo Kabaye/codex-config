@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "manage.py"
@@ -147,19 +148,12 @@ locally edited old projects
                 "user.txt",
             )
 
-            manage.install_command(
-                argparse.Namespace(
-                    repo=repo,
-                    home=home,
-                    projects_root=projects,
-                    skills_root=skills_root,
-                    project_root=project_root,
-                    profile="active",
-                    age=None,
-                    dry_run=False,
-                    force=False,
-                )
+            args = argparse.Namespace(
+                repo=repo, home=home, projects_root=projects, skills_root=skills_root,
+                project_root=project_root, profile="active", age=None, dry_run=False,
+                force=False,
             )
+            manage.install_command(args)
 
             installed = project_root / ".agents" / "skills" / "project-only"
             self.assertEqual(
@@ -189,6 +183,51 @@ locally edited old projects
                 (project_root / ".agents" / "skills").resolve(),
             )
             self.assertEqual(set(state["project_skills"]), {"project-only"})
+
+            args.project_root = root / "selected-project"
+            moved = args.project_root / ".agents" / "skills" / "project-only"
+            self._write_skill(moved, "local destination")
+            with self.assertRaisesRegex(manage.ConfigError, "already occupied"):
+                manage.install_command(args)
+            self.assertEqual((moved / "SKILL.md").read_text(encoding="utf-8"), "local destination\n")
+            moved.rename(moved.with_name("unrelated-local"))
+
+            installed_skill = installed / "SKILL.md"
+            installed_skill.write_text("local edit\n", encoding="utf-8")
+            with self.assertRaisesRegex(manage.ConfigError, "local changes"):
+                manage.install_command(args)
+            self.assertFalse(moved.exists())
+            installed_skill.write_text("project current\n", encoding="utf-8")
+
+            with patch.object(manage, "mark_transaction_committed", side_effect=OSError("rollback")):
+                with self.assertRaisesRegex(OSError, "rollback"):
+                    manage.install_command(args)
+            self.assertTrue(installed_skill.is_file())
+            self.assertFalse(moved.exists())
+
+            manage.install_command(args)
+            self.assertFalse(installed.exists())
+            self.assertTrue((moved / "SKILL.md").is_file())
+            self.assertTrue((moved.with_name("unrelated-local") / "SKILL.md").is_file())
+            args.project_root = None
+            self.assertEqual(manage.resolve_project_root(args, repo), moved.parents[2].resolve())
+
+    def test_install_prompts_for_project_and_requires_explicit_noninteractive_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            project = root / "work project"
+            project.mkdir()
+            args = argparse.Namespace(project_root=None, profile="work")
+            manifest = {"profiles": {"work": {"project_skills": ["project-only"]}}}
+            with patch.object(manage, "load_manifest", return_value=manifest):
+                with patch.object(manage.sys.stdin, "isatty", return_value=False):
+                    with self.assertRaisesRegex(manage.ConfigError, "--project-root"):
+                        manage.select_project_root(args, root, root)
+                with patch.object(manage.sys.stdin, "isatty", return_value=True):
+                    with patch("builtins.input", return_value=f'"{project}"') as prompt:
+                        manage.select_project_root(args, root, root)
+                        self.assertIn("project-only", prompt.call_args.args[0])
+                self.assertEqual(args.project_root, project.resolve())
 
     def test_install_repairs_duplicate_owned_markers(self) -> None:
         begin = "<!-- codex-config:begin -->"

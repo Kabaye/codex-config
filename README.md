@@ -67,7 +67,9 @@ Requires **PowerShell 7**, **Python 3.11+**, Git, and the private `codex-skills`
 ./manage.ps1 remove
 ```
 
-Use `-Profile private` for the personal installation. By default the projects root is `$HOME/Projects`; provide `--projects-root` to change it and `--project-root` for project-scoped skills. `update` only fast-forwards clean repositories; it does **not** overwrite local changes.
+Use `-Profile private` for the personal installation. `install` and `update` ask which project directory should receive the selected profile's project skills. Enter accepts the displayed previous destination when one exists. Pass `--project-root <path>` to select the destination from a script or skip the prompt. `--projects-root` is separate and defaults to `$HOME/Projects`.
+
+Selecting a different project installs the skill set there and removes the previous managed copies after checking their recorded hashes. Resolve existing same-name skills in the destination and local edits in the old locations before moving. Other project skills stay in place. `status`, `capture`, and `remove` use the recorded destination. `update` only fast-forwards clean repositories.
 
 Installation updates `codex-config`-owned blocks, selected skills and declared specialist roles. Instruction sync updates only instruction blocks and their hashes; it does not inspect or modify installed roles, model configuration or skills. Unrelated user content and `codex-profiles` markers remain intact. Edited owned blocks are refused unless explicitly reconciled (`capture` or reviewed `--force`). Manager transactions have rollback and state under `$CODEX_HOME/codex-config/`; do not manually delete this installed state.
 

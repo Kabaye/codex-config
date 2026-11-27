@@ -690,14 +690,6 @@ def configured_skill_names(manifest: dict[str, Any]) -> set[str]:
     }
 
 
-def configured_project_skill_names(manifest: dict[str, Any]) -> set[str]:
-    return {
-        skill
-        for config in manifest["profiles"].values()
-        for skill in config.get("project_skills", [])
-    }
-
-
 def render_fragment_block(
     repo_root: Path,
     fragments: list[str],
@@ -1904,7 +1896,47 @@ def state_skills_root(
 
 def resolve_project_root(args: argparse.Namespace, repo_root: Path) -> Path:
     configured = getattr(args, "project_root", None)
-    return configured.resolve() if configured is not None else repo_root.parent.resolve()
+    if configured is not None:
+        return configured.expanduser().resolve()
+    recorded = recorded_project_skills_root(load_install_state(args.home.resolve()))
+    return recorded.parent.parent if recorded is not None else repo_root.parent.resolve()
+
+
+def recorded_project_skills_root(state: dict[str, Any] | None) -> Path | None:
+    value = (state or {}).get("project_skills_root")
+    if value is None:
+        return None
+    root = Path(value)
+    if not root.is_absolute() or root != root.parent.parent / ".agents" / "skills":
+        raise ConfigError("Installed project skills root is invalid")
+    ensure_no_links(root, root.parent.parent)
+    return root.resolve()
+
+
+def select_project_root(args: argparse.Namespace, repo_root: Path, home: Path) -> None:
+    """Ask for the destination of the active profile's project skill set."""
+    if args.project_root is not None:
+        return
+    config = profile_config(load_manifest(repo_root, base_only=True), args.profile)
+    names = config.get("project_skills", [])
+    if not names:
+        return
+    if not sys.stdin.isatty():
+        raise ConfigError("Choose a destination with --project-root for project skills")
+    state = load_install_state(home)
+    installed = recorded_project_skills_root(state) if (state or {}).get("project_skills") else None
+    default = installed.parent.parent if installed is not None else None
+    if default is not None and not default.is_dir():
+        default = None
+    default_label = f" [{default}]" if default else ""
+    try:
+        value = input(f"Project directory for {', '.join(names)}{default_label}: ").strip().strip('"')
+    except (EOFError, KeyboardInterrupt):
+        raise ConfigError("Project selection cancelled") from None
+    selected = Path(value).expanduser().resolve() if value else default
+    if selected is None or not selected.is_dir():
+        raise ConfigError("Select an existing project directory for project skills")
+    args.project_root = selected
 
 
 def state_project_skills_root(
@@ -1912,12 +1944,7 @@ def state_project_skills_root(
     configured_project_skills_root: Path,
 ) -> Path:
     configured = configured_project_skills_root.resolve()
-    if not state:
-        return configured
-    value = state.get("project_skills_root")
-    if value is None:
-        return configured
-    candidate = Path(value).resolve()
+    candidate = recorded_project_skills_root(state) or configured
     if candidate != configured:
         raise ConfigError(
             "Installed project skill root differs from the configured project root; "
@@ -2183,9 +2210,11 @@ def install_command(args: argparse.Namespace) -> None:
     role_plan = plan_agent_roles(repo_root, manifest, home)
     previous_profile = previous.get("profile") if previous else None
     previous_skills_root = state_skills_root(previous, home, skills_root)
-    previous_project_skills_root = state_project_skills_root(
-        previous, project_skills_root
-    )
+    recorded_root = recorded_project_skills_root(previous)
+    previous_project_skills_root = recorded_root or project_skills_root
+    moving_project_skills = previous_project_skills_root != project_skills_root
+    # Before ownership was recorded, the checkout parent was the install location.
+    legacy_project_install = recorded_root is None and project_root == repo_root.parent
 
     markers = manifest["markers"]
     private_root = projects_root / "private"
@@ -2218,12 +2247,11 @@ def install_command(args: argparse.Namespace) -> None:
 
     previous_project_skills = previous.get("project_skills", {}) if previous else {}
     desired_project_names = list(config.get("project_skills", []))
-    owned_project_names = (
-        set(previous_project_skills) | configured_project_skill_names(manifest)
-    )
-    replacement_project_names = sorted(
-        owned_project_names | set(desired_project_names)
-    )
+    if desired_project_names and project_skills_root == skills_root:
+        raise ConfigError("Global and project skills must use distinct directories")
+    owned_project_names = set(previous_project_skills)
+    target_owned_names = set() if moving_project_skills else owned_project_names
+    replacement_project_names = sorted(target_owned_names | set(desired_project_names))
     stale_project_names = sorted(
         owned_project_names - set(desired_project_names)
     )
@@ -2238,13 +2266,25 @@ def install_command(args: argparse.Namespace) -> None:
         if previous_skills_root != skills_root:
             ensure_no_links(previous_skills_root / skill, previous_skills_root)
     for skill in replacement_project_names:
-        ensure_no_links(project_skills_root / skill, project_skills_root)
-        ensure_no_links(
-            previous_project_skills_root / skill, previous_project_skills_root
-        )
-        ensure_no_links(
-            legacy_project_skills_root / skill, legacy_project_skills_root
-        )
+        target = project_skills_root / skill
+        ensure_no_links(target, project_skills_root)
+        if target.exists() and skill not in target_owned_names and not legacy_project_install:
+            raise ConfigError(f"Project skill destination is already occupied: {target}")
+        legacy_target = legacy_project_skills_root / skill
+        ensure_no_links(legacy_target, legacy_project_skills_root)
+        if legacy_target.exists() and not (recorded_root == project_skills_root or legacy_project_install):
+            raise ConfigError(f"Project skill destination is already occupied: {legacy_target}")
+    old_project_names = sorted(owned_project_names if moving_project_skills else stale_project_names)
+    if old_project_names:
+        installed = load_state(home)
+        installed_skills = (installed or {}).get("project_skills", {})
+        for skill in old_project_names:
+            target = previous_project_skills_root / skill
+            ensure_no_links(target, previous_project_skills_root)
+            if target.exists():
+                entry = installed_skills.get(skill)
+                if entry is None or not target.is_dir() or tree_hashes(target) != entry["files"]:
+                    raise ConfigError(f"Project skill has local changes: {target}")
 
     if args.dry_run:
         print(
@@ -2270,6 +2310,10 @@ def install_command(args: argparse.Namespace) -> None:
                     "project_skills_root": str(project_skills_root),
                     "project_skills_install": desired_project_names,
                     "project_skills_remove": stale_project_names,
+                    "previous_project_skills_root": str(previous_project_skills_root)
+                    if moving_project_skills else None,
+                    "previous_project_skills_remove": old_project_names
+                    if moving_project_skills else [],
                     "legacy_project_skills_remove": [
                         name
                         for name in replacement_project_names
@@ -2338,7 +2382,7 @@ def install_command(args: argparse.Namespace) -> None:
         previous_project_skill_existence = (
             {
                 skill: (previous_project_skills_root / skill).exists()
-                for skill in replacement_project_names
+                for skill in old_project_names
             }
             if previous_project_skills_root != project_skills_root
             else {}
@@ -2433,7 +2477,7 @@ def install_command(args: argparse.Namespace) -> None:
         if previous_project_skills_root != project_skills_root:
             previous_project_rollback = staging_root / "previous-project-rollback"
             previous_project_rollback.mkdir(parents=True, exist_ok=True)
-            for skill in replacement_project_names:
+            for skill in old_project_names:
                 old_target = previous_project_skills_root / skill
                 if old_target.exists():
                     transfer_directory(
@@ -3348,7 +3392,7 @@ def add_location_arguments(parser: argparse.ArgumentParser) -> None:
         "--project-root",
         type=Path,
         default=None,
-        help="Target repository for repository-scoped skills; defaults to repo parent",
+        help="Project directory for project-scoped skills; required for unattended installation",
     )
 
 
@@ -3423,6 +3467,8 @@ def main() -> int:
         home = args.home.resolve()
         projects_root = args.projects_root.resolve()
         skills_root = args.skills_root.resolve()
+        if args.command in {"install", "update"}:
+            select_project_root(args, repo_root, home)
         project_root = resolve_project_root(args, repo_root)
         manager_root = home / "codex-config"
         dry_run = bool(getattr(args, "dry_run", False))
